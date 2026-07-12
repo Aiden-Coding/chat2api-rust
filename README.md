@@ -208,6 +208,61 @@ docker-compose up -d
 >   - chatgpt官网登录后，再打开 [https://chatgpt.com/api/auth/session](https://chatgpt.com/api/auth/session) 获取 `accessToken` 这个值。
 
 
+## Rust 重构版本使用说明
+
+本项目已使用 Rust 进行核心高性能重构（Completions 流式问答、Sentinel 握手、POW 求解器与本地 Turnstile 状态机等）。
+
+### 1. 编译与本地运行
+
+在运行之前，请确保您的系统已安装了 [Rust 工具链 (Cargo)](https://rustup.rs/)：
+
+```bash
+# 1. 进入项目根目录
+cd chat2api
+
+# 2. 编译项目 (Debug / Release)
+# 开发调试运行：
+cargo run
+
+# 编译为高度优化的 Release 可执行文件：
+cargo build --release
+
+# 运行编译后的二进制程序：
+./target/release/chat2api
+```
+
+程序默认监听端口为 `5005`，也可以通过设置 `PORT` 环境变量来自定义端口：
+```bash
+PORT=8080 cargo run
+```
+
+### 2. Rust 版特有机制与增强
+
+- **并行 POW 求解**：Rust 版本内置了基于多线程通道 `rayon` 的 POW（Proof of Work）加速器，哈希计算速度较 Python 版提高数十倍。
+- **本地 Turnstile 解算**：在未配置远程解算服务时，Rust 版会自动通过内置的本地混淆状态机执行算法，在本地解密 Turnstile Token。
+- **错误重试与自动轮询**：接口支持在配置的 `RETRY_TIMES` 次数内自动轮询切换至其他可用的健康 Token 进行重试，提高了高并发请求的高可用率。
+- **本地频控保护**：自动识别官方 429 报错详情中的 `clears_in` 限制时常并进行本地标记。限制期内直接在本地拦截并回退请求，保护账号不被封禁。
+- **多模态增强**：
+  - **支持 Base64**：多模态识图直接支持解析输入 `data:image/png;base64,...` 的 Base64 内联图片。
+  - **多格式宽高支持**：内置原生字节扫描器，无外部 C 依赖即可提取 **JPEG, PNG, GIF, WEBP** 图像的物理宽高。
+
+### 3. 新增/扩展的环境变量
+
+除了与 Python 共用的环境变量外，Rust 版本对以下环境变量进行了使用扩展：
+
+| 变量名         | 示例值                              | 描述                                                                                |
+|--------------|----------------------------------|-----------------------------------------------------------------------------------|
+| `CF_FILE_URL`  | `https://your-worker.workers.dev` | 代理多模态图片下载的 Cloudflare Workers 接口地址，用以中转下载图片资源                                  |
+| `PORT`         | `8080`                           | 监听端口，默认为 `5005`                                                               |
+
+### 4. 种子 Token 清除接口
+
+Rust 版暴露了专门的种子映射重置路由，可以通过以下请求清空本地 Seed 隔离：
+
+- **请求地址**：`POST /seed_tokens/clear`（如配置了 `API_PREFIX`，则为 `POST /{{API_PREFIX}}/seed_tokens/clear`）
+- **功能**：清空并写盘持久化重置本地 `seed_map.json` 与 `conversation_map.json`。
+
+
 ## License
 
 MIT License
