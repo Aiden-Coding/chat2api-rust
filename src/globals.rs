@@ -45,6 +45,7 @@ pub struct AppStateInner {
     pub conversation_map: HashMap<String, serde_json::Value>, // 缓存：会话 ID 到 Token 映射
     pub impersonate_list: Vec<String>,       // 当前可用拟态指纹的名称数组 (供随机选择)
     pub limit_details: HashMap<String, HashMap<String, i64>>, // 缓存：限流频控拦截 Token -> (Model -> clears_in)
+    pub grok_rate_limited_tokens: HashMap<String, std::time::Instant>, // 缓存：暂时被频控 (429) 的 Grok Token
 }
 
 /// 全局共享状态的包装结构体，采用多线程安全的 Arc + 异步读写锁 RwLock 维护
@@ -177,6 +178,7 @@ impl AppState {
                 conversation_map,
                 impersonate_list,
                 limit_details: HashMap::new(),
+                grok_rate_limited_tokens: HashMap::new(),
             })),
         }
     }

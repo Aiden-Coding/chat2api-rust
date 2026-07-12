@@ -191,8 +191,13 @@ pub async fn get_grok_req_token(
     state: &AppState,
     config: &Config,
     req_token: &str,
+    exclude_tokens: &[String],
 ) -> Result<String, actix_web::Error> {
-    let inner = state.inner.write().await;
+    let mut inner = state.inner.write().await;
+
+    // Clean up expired rate-limited tokens
+    let now = std::time::Instant::now();
+    inner.grok_rate_limited_tokens.retain(|_, &mut expire_time| expire_time > now);
 
     if !req_token.is_empty() {
         let should_allocate = if config.authorization_list.is_empty() {
@@ -207,7 +212,11 @@ pub async fn get_grok_req_token(
     }
 
     let available_tokens: Vec<String> = inner.grok_token_list.iter()
-        .filter(|t| !inner.grok_error_token_list.contains(t))
+        .filter(|t| {
+            !inner.grok_error_token_list.contains(t)
+            && !inner.grok_rate_limited_tokens.contains_key(*t)
+            && !exclude_tokens.contains(t)
+        })
         .cloned()
         .collect();
 
@@ -223,6 +232,15 @@ pub async fn get_grok_req_token(
             let index = count % available_tokens.len();
             return Ok(available_tokens[index].clone());
         }
+    }
+
+    // Fallback to any active token if all are locked/excluded
+    let fallback_tokens: Vec<String> = inner.grok_token_list.iter()
+        .filter(|t| !inner.grok_error_token_list.contains(t))
+        .cloned()
+        .collect();
+    if !fallback_tokens.is_empty() {
+        return Ok(fallback_tokens[0].clone());
     }
 
     Ok(String::new())
@@ -299,6 +317,8 @@ pub async fn handle_grok_conversation(
         }
     }
 
+    let mut excluded_tokens = Vec::new();
+
     for attempt in 0..=max_retries {
         if attempt > 0 {
             info!("正在重试发送 Grok 会话 (第 {}/{} 次重试)...", attempt, max_retries);
@@ -309,6 +329,7 @@ pub async fn handle_grok_conversation(
             &state,
             &config,
             origin_token.as_deref().unwrap_or(""),
+            &excluded_tokens,
         ).await {
             Ok(tok) => tok,
             Err(e) => {
@@ -421,6 +442,15 @@ pub async fn handle_grok_conversation(
                                 AppState::save_item_to_db("grok_error_tokens", &tok, &"");
                             });
                         }
+                    } else if status.as_u16() == 429 {
+                        let mut inner = state.inner.write().await;
+                        inner.grok_rate_limited_tokens.insert(
+                            sso_token.clone(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(300),
+                        );
+                        excluded_tokens.push(sso_token.clone());
+                    } else {
+                        excluded_tokens.push(sso_token.clone());
                     }
                     let err = ErrorInternalServerError(format!("Grok API error (status {}): {}", status, err_text));
                     last_err = Some(err);
@@ -429,6 +459,7 @@ pub async fn handle_grok_conversation(
             }
             Err(e) => {
                 error!("Grok connection error: {:?}", e);
+                excluded_tokens.push(sso_token.clone());
                 let err = ErrorInternalServerError(format!("Grok connection error: {:?}", e));
                 last_err = Some(err);
                 continue;
