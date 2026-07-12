@@ -699,10 +699,21 @@ impl ChatService {
                     if err_text.contains("cf_chl_opt") {
                         return Err(ErrorForbidden("cf_chl_opt"));
                     }
-                    if status.as_u16() == 429 {
-                        // 429 时将 token 加入错误列表
+                    let status_u16 = status.as_u16();
+                    if status_u16 == 429 || status_u16 == 401 || status_u16 == 403 {
                         self.mark_token_error().await;
-                        return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
+                        if status_u16 == 429 {
+                            return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
+                        } else if status_u16 == 401 {
+                            return Err(actix_web::error::ErrorUnauthorized(serde_json::json!({
+                                "error": {
+                                    "message": format!("Unauthorized: {}", err_text),
+                                    "type": "unauthorized_error"
+                                }
+                            }).to_string()));
+                        } else {
+                            return Err(ErrorForbidden(format!("Forbidden: {}", err_text)));
+                        }
                     }
                     error!("Sentinel non-200 status {}, body: {}", status, err_text);
                     Err(ErrorForbidden(format!(
@@ -841,7 +852,8 @@ impl ChatService {
                     if err_text.contains("cf_chl_opt") {
                         return Err(ErrorForbidden("cf_chl_opt"));
                     }
-                    if status.as_u16() == 429 {
+                    let status_u16 = status.as_u16();
+                    if status_u16 == 429 {
                         self.mark_token_error().await;
                         if let Ok(json_err) = serde_json::from_str::<Value>(&err_text) {
                             let clears_in = json_err.get("clears_in")
@@ -858,6 +870,24 @@ impl ChatService {
                             }
                         }
                         return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
+                    }
+                    if status_u16 == 401 || status_u16 == 403 {
+                        self.mark_token_error().await;
+                        if status_u16 == 401 {
+                            return Err(actix_web::error::ErrorUnauthorized(serde_json::json!({
+                                "error": {
+                                    "message": format!("Unauthorized: {}", err_text),
+                                    "type": "unauthorized_error"
+                                }
+                            }).to_string()));
+                        } else {
+                            return Err(ErrorForbidden(serde_json::json!({
+                                "error": {
+                                    "message": format!("Forbidden: {}", err_text),
+                                    "type": "forbidden_error"
+                                }
+                            }).to_string()));
+                        }
                     }
                     Err(ErrorInternalServerError(format!(
                         "OpenAI conversation failed, status {}, detail: {}",

@@ -13,6 +13,19 @@ use crate::chatgpt::client::create_client;
 const ERROR_TOKENS_FILE: &str = "data/error_token.txt";
 const SEED_MAP_FILE: &str = "data/seed_map.json";
 
+/// 判断传入的 token 字符串是否是多个以逗号分隔的 Access Token / Refresh Token
+pub fn is_multiple_tokens(req_token: &str) -> bool {
+    if !req_token.contains(',') {
+        return false;
+    }
+    let parts: Vec<&str> = req_token.split(',').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let second = parts[1].trim();
+    second.starts_with("eyJ") || second.starts_with("fk-") || second.len() > 40
+}
+
 /// 获取请求所需的真实 Token (可以是 AccessToken 或 RefreshToken)
 /// state: 全局 App 状态
 /// config: 全局配置文件
@@ -25,6 +38,34 @@ pub async fn get_req_token(
     seed_opt: Option<&str>,
 ) -> Result<String, actix_web::Error> {
     let mut inner = state.inner.write().await;
+
+    // 判断传入的 req_token 是否是多个 token 列表
+    if is_multiple_tokens(req_token) {
+        let parts: Vec<&str> = req_token.split(',').collect();
+        let mut available_parts = Vec::new();
+        for part in parts {
+            let part_trimmed = part.trim().to_string();
+            if !part_trimmed.is_empty() && !inner.error_token_list.contains(&part_trimmed) {
+                available_parts.push(part_trimmed);
+            }
+        }
+        if !available_parts.is_empty() {
+            if config.random_token {
+                let mut rng = rand::thread_rng();
+                let chosen = available_parts.choose(&mut rng).unwrap().clone();
+                return Ok(chosen);
+            } else {
+                static MULTI_TOKEN_COUNTER: AtomicUsize = AtomicUsize::new(0);
+                let count = MULTI_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let index = count % available_parts.len();
+                return Ok(available_parts[index].clone());
+            }
+        } else {
+            // 如果所有传入的 token 都在黑名单中，返回第一个 token 以便于让后续接口产生正确的未授权/报错响应
+            let first_part = req_token.split(',').next().unwrap_or("").trim().to_string();
+            return Ok(first_part);
+        }
+    }
     
     // 过滤出当前内存中可用的非错误 Token 列表
     let available_tokens: Vec<String> = inner.token_list.iter()
