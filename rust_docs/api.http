@@ -90,6 +90,20 @@ Content-Type: application/json
   ],
   "stream": true
 }
+### 发送 Grok 会话请求 (流式)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "grok-4.3-fast",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello! How are you?"
+    }
+  ],
+  "stream": true
+}
 
 ### 发送 Grok 会话请求 (非流式)
 POST {{host}}/v1/chat/completions
