@@ -9,14 +9,19 @@
 如果您直接在物理机或云服务器上部署，可以将其编译为原生二进制文件并使用守护进程（如 `systemd` 或 `pm2`）进行托管。
 
 ### 1. 编译
+
 在具有 Rust 工具链的环境中执行编译命令：
+
 ```bash
 cargo build --release
 ```
+
 编译成功后，生成的优化二进制文件位于 `./target/release/chat2api`。您可以将其复制到服务器的目标运行路径。
 
 ### 2. 使用 pm2 进行托管守护
+
 如果服务器安装了 Node.js 环境，可以使用 `pm2` 非常方便地管理服务：
+
 ```bash
 # 启动并命名服务，通过 env 参数注入环境变量
 PORT=5005 HISTORY_DISABLED=true pm2 start ./chat2api --name "chat2api-rust"
@@ -29,9 +34,11 @@ pm2 stop chat2api-rust
 ```
 
 ### 3. 使用 systemd 服务守护 (推荐)
+
 在 Linux 系统上，推荐编写 `systemd` 配置文件：
 
 1. 创建并编辑 `/etc/systemd/system/chat2api.service`：
+
    ```ini
    [Unit]
    Description=Chat2API Rust Service
@@ -57,6 +64,7 @@ pm2 stop chat2api-rust
    ```
 
 2. 重新加载配置并启动：
+
    ```bash
    systemctl daemon-reload
    systemctl enable chat2api
@@ -74,12 +82,15 @@ pm2 stop chat2api-rust
 Docker 部署无需在宿主机上配置 Rust 环境，是容器化管理的最优选。
 
 ### 1. 本地构建 Docker 镜像
+
 在项目根目录下（即包含 `Cargo.toml` 的路径），使用以下命令进行构建：
+
 ```bash
 docker build -t chat2api-rust:latest .
 ```
 
 ### 2. 运行 Docker 容器
+
 ```bash
 docker run -d \
   --name chat2api-rust \
@@ -91,6 +102,7 @@ docker run -d \
   -e ENABLE_LIMIT=true \
   chat2api-rust:latest
 ```
+
 > **注意**：挂载 `-v $(pwd)/data:/app/data` 能够确保您在网页上传的 `tokens.txt`、生成的指纹等文件不会因容器重启而丢失。
 
 ---
@@ -125,6 +137,7 @@ services:
 ```
 
 在同级目录下执行以下命令运行：
+
 ```bash
 docker compose up -d
 ```

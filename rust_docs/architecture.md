@@ -8,7 +8,7 @@
 
 项目的整体物理架构由 4 个主要分层构成：
 
-```
+```text
        +---------------------------------------------+
        |               客户端 / 应用                 |
        +----------------------|----------------------+
@@ -48,33 +48,36 @@
 ## 2. 核心模块详解
 
 ### 2.1 API 路由与处理层 (`src/api/`)
-*   **`routes.rs`**：暴露 API 服务。定义了与 OpenAI API 兼容的 `/v1/chat/completions` 主问答路由。此外挂载了网页版 `GET /tokens` 可视化管理端，以及后台上传、清空、单点追加 Token 和重置隔离种子的辅助路由。
-*   **`tokens.rs`**：Token 计算逻辑。提供对对话上下文中 prompt 文本数量的 Token 计算能力，并且支持根据 OpenAI 的多模态计费逻辑，通过提取高低分辨率图像宽高计算相应的图形 Token，提供精准的文本截断（`split_tokens_from_content`）。
-*   **`mod.rs`**：模块导出的入口。
+
+* **`routes.rs`**：暴露 API 服务。定义了与 OpenAI API 兼容的 `/v1/chat/completions` 主问答路由。此外挂载了网页版 `GET /tokens` 可视化管理端，以及后台上传、清空、单点追加 Token 和重置隔离种子的辅助路由。
+* **`tokens.rs`**：Token 计算逻辑。提供对对话上下文中 prompt 文本数量的 Token 计算能力，并且支持根据 OpenAI 的多模态计费逻辑，通过提取高低分辨率图像宽高计算相应的图形 Token，提供精准的文本截断（`split_tokens_from_content`）。
+* **`mod.rs`**：模块导出的入口。
 
 ### 2.2 ChatGPT 业务解算服务层 (`src/chatgpt/`)
-*   **`service.rs`**：项目的“大脑”。封装了 `ChatService` 结构体，持有会话状态。控制着：
-    1.  从配置中生成指纹和客户端连接实例。
-    2.  调用 `get_chat_requirements` 发送 Sentinel 握手并解决 POW。
-    3.  若遇到 Arkose 机制则远程请求求解器换取 token 注入 Sentinel 头。
-    4.  处理多模态的内联或外联下载。
-    5.  处理会话发送（发送 `/conversation` 请求）。
-*   **`format.rs`**：格式化引擎。支持提取生成的图片 URL、提取代码沙箱中运行生成的文件指针，并将 ChatGPT SSE 流实时格式化转换为客户端可读的 OpenAI 流式数据帧。
-*   **`auth.rs`**：授权管理。处理 AccessToken 的校验与 RefreshToken 的 Auth0 接口五天缓存刷新机制，控制着多账号的顺序轮询（AtomicUsize 锁）与随机挑选。
-*   **`pow.rs`**：工作量证明求解器。调用多核通道基于 Rayon 并行哈希碰撞，解算出官方 Sentinel 要求的验证 Token。
-*   **`turnstile.rs`**：CF Turnstile 本地状态机。在未配置远程解密时，模拟浏览器 JS 运算解密生成验证 Token。
-*   **`client.rs`**：拟态客户端工厂。基于 `rquest`，模拟高版本 Chrome/Safari 的 TLS/JA3 指纹，并为每次通信匹配专有的随机代理。
+
+* **`service.rs`**：项目的“大脑”。封装了 `ChatService` 结构体，持有会话状态。控制着：
+    1. 从配置中生成指纹和客户端连接实例。
+    2. 调用 `get_chat_requirements` 发送 Sentinel 握手并解决 POW。
+    3. 若遇到 Arkose 机制则远程请求求解器换取 token 注入 Sentinel 头。
+    4. 处理多模态的内联或外联下载。
+    5. 处理会话发送（发送 `/conversation` 请求）。
+* **`format.rs`**：格式化引擎。支持提取生成的图片 URL、提取代码沙箱中运行生成的文件指针，并将 ChatGPT SSE 流实时格式化转换为客户端可读的 OpenAI 流式数据帧。
+* **`auth.rs`**：授权管理。处理 AccessToken 的校验与 RefreshToken 的 Auth0 接口五天缓存刷新机制，控制着多账号的顺序轮询（AtomicUsize 锁）与随机挑选。
+* **`pow.rs`**：工作量证明求解器。调用多核通道基于 Rayon 并行哈希碰撞，解算出官方 Sentinel 要求的验证 Token。
+* **`turnstile.rs`**：CF Turnstile 本地状态机。在未配置远程解密时，模拟浏览器 JS 运算解密生成验证 Token。
+* **`client.rs`**：拟态客户端工厂。基于 `rquest`，模拟高版本 Chrome/Safari 的 TLS/JA3 指纹，并为每次通信匹配专有的随机代理。
 
 ### 2.3 全局状态与配置层
-*   **`globals.rs`**：全局状态容器 `AppState`。内部使用 `Arc<RwLock<AppStateInner>>` 实现，存储着 Token 活跃池、黑名单列表、会话隔离的 Seed 种子映射表、以及新增的 429 本地频控限制拦截字典。支持数据持久化写盘到本地 json 文件。
-*   **`config.rs`**：加载器。项目启动时，读取系统环境变量或根目录下 `.env` 的配置，并做格式校验和控制台可视化打印。
-*   **数据持久化**：所有的指纹绑定、会话隔离和黑名单均在 `data/` 目录下进行双写持久化，详细分析可见 [persistence.md](file:///Users/dwx/Documents/GitHub/chat2api/rust_docs/persistence.md)。
+
+* **`globals.rs`**：全局状态容器 `AppState`。内部使用 `Arc<RwLock<AppStateInner>>` 实现，存储着 Token 活跃池、黑名单列表、会话隔离的 Seed 种子映射表、以及新增的 429 本地频控限制拦截字典。支持数据持久化写盘到本地 json 文件。
+* **`config.rs`**：加载器。项目启动时，读取系统环境变量或根目录下 `.env` 的配置，并做格式校验和控制台可视化打印。
+* **数据持久化**：所有的指纹绑定、会话隔离和黑名单均在 `data/` 目录下进行双写持久化，详细分析可见 [persistence.md](file:///Users/dwx/Documents/GitHub/chat2api/rust_docs/persistence.md)。
 
 ---
 
 ## 3. 架构依赖与技术栈
 
-*   **HTTP 框架**：`Actix-web`，基于 Actix Actor 模型，提供高并发支持。
-*   **异步网络请求**：`rquest`，相比标准 `reqwest` 增加了 TLS Impersonate 拟态指纹的支持，可对抗 OpenAI 针对 JA3 指纹的防护。
-*   **并发与计算加速**：`Rayon`，将 POW 的 CPU 密集型 SHA3 计算全自动分配到系统的多核心上并发求解。
-*   **时间与日期**：`Chrono`，用于转换本地时间戳以展示频控截止日志。
+* **HTTP 框架**：`Actix-web`，基于 Actix Actor 模型，提供高并发支持。
+* **异步网络请求**：`rquest`，相比标准 `reqwest` 增加了 TLS Impersonate 拟态指纹的支持，可对抗 OpenAI 针对 JA3 指纹的防护。
+* **并发与计算加速**：`Rayon`，将 POW 的 CPU 密集型 SHA3 计算全自动分配到系统的多核心上并发求解。
+* **时间与日期**：`Chrono`，用于转换本地时间戳以展示频控截止日志。

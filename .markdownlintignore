@@ -1,0 +1,4 @@
+venv/
+target/
+.git/
+node_modules/

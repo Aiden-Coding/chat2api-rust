@@ -10,7 +10,6 @@
 
 👮 配套用户管理端[Chat-Share](https://github.com/h88782481/Chat-Share)使用前需提前配置好环境变量（ENABLE_GATEWAY设置为True，AUTO_SEED设置为False）
 
-
 ## 交流群
 
 [https://t.me/chat2api](https://t.me/chat2api)
@@ -28,6 +27,7 @@
 ### 最新版本号存于 `version.txt`
 
 ### 逆向API 功能
+>
 > - [x] 流式、非流式传输
 > - [x] 免登录 GPT-3.5 对话
 > - [x] GPT-3.5 模型对话（传入模型名不包含 gpt-4，则默认使用 gpt-3.5，也就是 text-davinci-002-render-sha）
@@ -46,6 +46,7 @@
 > - [x] 支持 `O3-mini/high`、`O1/mini/Pro` 等模型推理过程输出
 
 ### 官网镜像 功能
+>
 > - [x] 支持官网原生镜像
 > - [x] 后台账号池随机抽取，`Seed` 设置随机账号
 > - [x] 输入 `RefreshToken` 或 `AccessToken` 直接登录使用
@@ -57,9 +58,9 @@
 > - [x] 支持 `GPTs` 商店
 > - [x] 支持 `DeepReaserch`、`Canvas` 等官网独有功能
 > - [x] 支持切换各国语言
-
-
+>
 > TODO
+>
 > - [ ] 暂无，欢迎提 `issue`
 
 ## 逆向API
@@ -114,7 +115,7 @@ curl --location 'http://127.0.0.1:5005/v1/chat/completions' \
 
 ![login.png](docs/login.png)
 
-4. 进入官网原生镜像页面使用
+1. 进入官网原生镜像页面使用
 
 ![chatgpt.png](docs/chatgpt.png)
 
@@ -188,7 +189,6 @@ wget https://raw.githubusercontent.com/LanQian528/chat2api/main/docker-compose-w
 docker-compose up -d
 ```
 
-
 ## 常见问题
 
 > - 错误代码：
@@ -197,16 +197,15 @@ docker-compose up -d
 >   - `429`：当前 IP 请求1小时内请求超过限制，请稍后再试，或更换 IP。
 >   - `500`：服务器内部错误，请求失败。
 >   - `502`：服务器网关错误，或网络不可用，请尝试更换网络环境。
-
+>
 > - 已知情况：
 >   - 日本 IP 很多不支持免登，免登 GPT-3.5 建议使用美国 IP。
 >   - 99%的账号都支持免费 `GPT-4o` ，但根据 IP 地区开启，目前日本和新加坡 IP 已知开启概率较大。
-
+>
 > - 环境变量 `AUTHORIZATION` 是什么？
 >   - 是一个自己给 chat2api 设置的一个身份验证，设置后才可使用已保存的 Tokens 轮询，请求时当作 `APIKEY` 传入。
 > - AccessToken 如何获取？
 >   - chatgpt官网登录后，再打开 [https://chatgpt.com/api/auth/session](https://chatgpt.com/api/auth/session) 获取 `accessToken` 这个值。
-
 
 ## Rust 重构版本使用说明
 
@@ -232,6 +231,7 @@ cargo build --release
 ```
 
 程序默认监听端口为 `5005`，也可以通过设置 `PORT` 环境变量来自定义端口：
+
 ```bash
 PORT=8080 cargo run
 ```
@@ -262,8 +262,6 @@ Rust 版暴露了专门的种子映射重置路由，可以通过以下请求清
 - **请求地址**：`POST /seed_tokens/clear`（如配置了 `API_PREFIX`，则为 `POST /{{API_PREFIX}}/seed_tokens/clear`）
 - **功能**：清空并写盘持久化重置本地 `seed_map.json` 与 `conversation_map.json`。
 
-
 ## License
 
 MIT License
-

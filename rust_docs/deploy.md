@@ -9,7 +9,9 @@
 直接在物理机或 VPS 虚拟机上部署能够获得极致的响应性能。
 
 ### 1.1 编译与运行
+
 需要服务器上安装有 Cargo 环境。
+
 ```bash
 # 进入根目录编译 Release 二进制文件
 cargo build --release
@@ -19,9 +21,11 @@ cp ./target/release/chat2api /usr/local/bin/
 ```
 
 ### 1.2 systemd 系统服务托管 (推荐)
+
 通过 systemd 实现故障自动重启、开机自启与环境变量隔离。
 
-1.  编辑配置文件 `/etc/systemd/system/chat2api.service`：
+1. 编辑配置文件 `/etc/systemd/system/chat2api.service`：
+
     ```ini
     [Unit]
     Description=Chat2API Rust High Performance Service
@@ -46,7 +50,8 @@ cp ./target/release/chat2api /usr/local/bin/
     WantedBy=multi-user.target
     ```
 
-2.  载入并启动：
+2. 载入并启动：
+
     ```bash
     systemctl daemon-reload
     systemctl enable chat2api
@@ -61,12 +66,15 @@ cp ./target/release/chat2api /usr/local/bin/
 ## 2. Docker 与 Docker Compose 部署
 
 ### 2.1 编写本地的 Dockerfile
+
 在项目根目录中已提供 `Dockerfile`。您可以通过以下命令在本地进行镜像构建：
+
 ```bash
 docker build -t chat2api-rust:latest .
 ```
 
 ### 2.2 运行容器
+
 ```bash
 docker run -d \
   --name chat2api-rust \
@@ -81,9 +89,11 @@ docker run -d \
 ```
 
 ### 2.3 Docker Compose 联动 Cloudflare WARP 代理部署
+
 针对服务器 IP 经常被 OpenAI 拦截 403 的情况，推荐配合 Cloudflare WARP 容器作为本地 SOCKS5 代理。
 
 创建 `docker-compose.yml`：
+
 ```yaml
 version: '3.8'
 
@@ -122,6 +132,7 @@ services:
 ```
 
 一键拉起部署：
+
 ```bash
 docker compose up -d
 ```

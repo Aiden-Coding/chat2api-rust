@@ -85,7 +85,7 @@ sequenceDiagram
 
 当客户端传入多模态内容（`image_url`）时，系统的流式处理步骤如下：
 
-```
+```text
 [开始解析 messages] 
        │
        ▼
@@ -110,10 +110,10 @@ sequenceDiagram
 
 ### 2.2 429 会话级限流拦截与重试自愈机制
 
-1.  **接口入口**：由 `routes.rs` 捕获到用户 Completions 请求。
-2.  **前置限流判定**：
+1. **接口入口**：由 `routes.rs` 捕获到用户 Completions 请求。
+2. **前置限流判定**：
     在 `ChatService::new` 内，从全局状态提取 `limit_details` 映射表，检索 `Token + Model`。如果存在未到期的截止时间戳，直接向路由抛出 `429 TooManyRequests` 异常，此账号在此次轮询中被跳过，直接触发下一次重试迭代。
-3.  **捕获异常与黑名单排除**：
+3. **捕获异常与黑名单排除**：
     向 OpenAI 发起请求若遭遇 `429` 响应，解析 Body 中的 `clears_in`，登记拦截信息，并将此 Token 移入 `error_token_list` 缓存列表防再次调度。
-4.  **接口自愈**：
+4. **接口自愈**：
     重试循环自动进入下一轮，通过 `get_req_token` 会自动筛选出不在 `error_token_list` 中的健康账号，从而无感恢复服务。
