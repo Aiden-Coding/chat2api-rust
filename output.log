@@ -1,0 +1,4 @@
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0,"logprobs":null}],"created":1783825022,"id":"chatcmpl-754b71a2ba164b49b0014eb179b3f","model":"auto","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0,"logprobs":null}],"created":1783825022,"id":"chatcmpl-754b71a2ba164b49b0014eb179b3f","model":"auto","object":"chat.completion.chunk"}
+

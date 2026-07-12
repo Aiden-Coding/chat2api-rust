@@ -6,3 +6,7 @@
 /data/
 /.venv/
 /.vscode/
+
+# Added by cargo
+
+/target
