@@ -22,14 +22,46 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Bump version if commit message contains 'release'
+        id: bump_version
+        if: contains(github.event.head_commit.message, 'release')
+        run: |
+          python -c '
+          import re
+          with open("version.txt", "r") as f:
+              ver = f.read().strip()
+          m = re.match(r"^(\d+\.\d+\.\d+)-(beta|alpha|rc)(\d+)$", ver)
+          if m:
+              base, pre, num = m.groups()
+              new_ver = f"{base}-{pre}{int(num)+1}"
+          else:
+              m2 = re.match(r"^(\d+\.\d+)\.(\d+)$", ver)
+              if m2:
+                  prefix, patch = m2.groups()
+                  new_ver = f"{prefix}.{int(patch)+1}"
+              else:
+                  new_ver = ver
+          with open("version.txt", "w") as f:
+              f.write(new_ver)
+          print(f"Bumped version from {ver} to {new_ver}")
+          '
+          new_ver=$(cat version.txt)
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add version.txt
+          git commit -m "chore: bump version to $new_ver [skip ci]" || echo "No changes to commit"
+          git push origin main || echo "No changes to push"
 
       - name: Read the version from version.txt
         id: get_version
         run: |
           version=$(cat version.txt)
           echo "Current version: v$version"
-          echo "::set-output name=version::v$version"
+          echo "version=v$version" >> $GITHUB_OUTPUT
 
       - name: Commit and push version tag
         env:
@@ -97,3 +129,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        if: contains(github.event.head_commit.message, 'release')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
