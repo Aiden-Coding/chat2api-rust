@@ -69,9 +69,9 @@
 
 ### 2.3 全局状态与配置层
 
-* **`globals.rs`**：全局状态容器 `AppState`。内部使用 `Arc<RwLock<AppStateInner>>` 实现，存储着 Token 活跃池、黑名单列表、会话隔离的 Seed 种子映射表、以及新增的 429 本地频控限制拦截字典。支持数据持久化写盘到本地 json 文件。
+* **`globals.rs`**：全局状态容器 `AppState`。内部使用 `Arc<RwLock<AppStateInner>>` 实现，存储着 Token 活跃池、黑名单列表、会话隔离的 Seed 种子映射表、以及新增的 429 本地频控限制拦截字典。支持数据持久化写入 SQLite 本地数据库 `data/data.db` 对应的表中。
 * **`config.rs`**：加载器。项目启动时，读取系统环境变量或根目录下 `.env` 的配置，并做格式校验和控制台可视化打印。
-* **数据持久化**：所有的指纹绑定、会话隔离和黑名单均在 `data/` 目录下进行双写持久化，详细分析可见 [persistence.md](file:///Users/dwx/Documents/GitHub/chat2api/rust_docs/persistence.md)。
+* **数据持久化**：所有的指纹绑定、会话隔离和黑名单均在 `data/data.db` 数据库中进行局部更新与双写持久化，详细分析可见 [persistence.md](file:///Users/dwx/Documents/GitHub/chat2api/rust_docs/persistence.md)。
 
 ---
 

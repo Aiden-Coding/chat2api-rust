@@ -1,4 +1,3 @@
-use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use rand::seq::SliceRandom;
 use serde_json::json;
@@ -10,8 +9,7 @@ use crate::config::Config;
 use crate::globals::AppState;
 use crate::chatgpt::client::create_client;
 
-const ERROR_TOKENS_FILE: &str = "data/error_token.txt";
-const SEED_MAP_FILE: &str = "data/seed_map.json";
+
 
 /// 判断传入的 token 字符串是否是多个以逗号分隔的 Access Token / Refresh Token
 pub fn is_multiple_tokens(req_token: &str) -> bool {
@@ -90,18 +88,24 @@ pub async fn get_req_token(
                     "token": chosen.clone(),
                     "conversations": []
                 });
-                inner.seed_map.insert(seed.to_string(), new_seed_val);
-                
-                // 持久化 seed_map.json 到磁盘上
-                if let Ok(content) = serde_json::to_string_pretty(&inner.seed_map) {
-                    let _ = fs::write(SEED_MAP_FILE, content);
-                }
+                inner.seed_map.insert(seed.to_string(), new_seed_val.clone());
+                let sd = seed.to_string();
+                let val = new_seed_val.clone();
+                tokio::task::spawn_blocking(move || {
+                    AppState::save_item_to_db("seed_cache", &sd, &val);
+                });
                 return Ok(chosen);
             }
         }
 
-        // 验证客户端传入的是否在自定义授权码列表中。如果是，应当在后台账号池内进行轮询/随机分配
-        if config.authorization_list.contains(&req_token.to_string()) {
+        // 验证客户端传入的是否在自定义授权码列表中。如果是，或者没有配置授权列表且传入为空，应当在后台账号池内进行轮询/随机分配
+        let should_allocate = if config.authorization_list.is_empty() {
+            req_token.is_empty()
+        } else {
+            config.authorization_list.contains(&req_token.to_string())
+        };
+
+        if should_allocate {
             if !available_tokens.is_empty() {
                 if config.random_token {
                     // 随机策略：从活跃池中随机抽取
@@ -262,18 +266,10 @@ async fn chat_refresh(
                     let mut inner = state.inner.write().await;
                     if !inner.error_token_list.contains(&refresh_token.to_string()) {
                         inner.error_token_list.push(refresh_token.to_string());
-                        
-                        // 写盘追加记录至 error_token.txt，防止重启丢失
-                        if let Ok(mut content) = fs::read_to_string(ERROR_TOKENS_FILE) {
-                            if !content.ends_with('\n') && !content.is_empty() {
-                                content.push('\n');
-                            }
-                            content.push_str(refresh_token);
-                            content.push('\n');
-                            let _ = fs::write(ERROR_TOKENS_FILE, content);
-                        } else {
-                            let _ = fs::write(ERROR_TOKENS_FILE, format!("{}\n", refresh_token));
-                        }
+                        let tok = refresh_token.to_string();
+                        tokio::task::spawn_blocking(move || {
+                            AppState::save_item_to_db("error_tokens", &tok, &"");
+                        });
                     }
                 }
                 error!("刷新 access_token 遭遇失败响应: {}", text);

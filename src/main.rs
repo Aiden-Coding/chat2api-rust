@@ -5,7 +5,7 @@ use log::info;
 use chat2api::config::Config;
 use chat2api::globals::AppState;
 use chat2api::chatgpt::auth::refresh_all_tokens;
-use chat2api::api::routes::{send_conversation, upload_html, upload_post, clear_tokens, error_tokens, add_token, clear_seed_tokens};
+use chat2api::api::routes::{send_conversation, upload_html, upload_post, clear_tokens, error_tokens, get_token_list, add_token, clear_seed_tokens};
 
 /// Actix-web 服务运行主入口函数
 #[actix_web::main]
@@ -107,6 +107,7 @@ async fn main() -> std::io::Result<()> {
                     .service(upload_post)
                     .service(clear_tokens)
                     .service(error_tokens)
+                    .service(get_token_list)
                     .service(add_token)
                     .service(clear_seed_tokens)
             )

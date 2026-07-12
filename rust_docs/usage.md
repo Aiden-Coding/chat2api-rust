@@ -91,7 +91,26 @@
 
 ---
 
-## 4. 种子绑定清空接口
+## 4. 获取所有 Token 列表接口
+
+* **请求路径**：`GET /tokens/list`
+* **响应示例**：
+
+```json
+{
+  "status": "success",
+  "tokens": [
+    "eyJhbGciOi..."
+  ],
+  "error_tokens": [
+    "fk-..."
+  ]
+}
+```
+
+---
+
+## 5. 种子绑定清空接口
 
 如果您启用了 `auto_seed` 属性，项目会自动缓存并隔离每个用户 Seed 绑定的官方 Token。如果您想要重新打乱和绑定，可调用此接口：
 
@@ -105,4 +124,4 @@
 }
 ```
 
-该请求会重置本地缓存，且擦除 `data/seed_map.json` 与 `data/conversation_map.json` 并重新写盘。
+该请求会重置本地缓存，并清空 SQLite 数据库中 `seed_cache` 与 `conversation_cache` 对应的映射表数据。

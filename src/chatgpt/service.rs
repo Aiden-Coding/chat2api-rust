@@ -287,9 +287,13 @@ impl ChatService {
                 sec_ch_ua_platform = sec_ch_ua_plat_val;
                 sec_ch_ua_mobile = sec_ch_ua_mob_val;
 
-                inner.fp_map.insert(req_token.clone(), Value::Object(fp_obj));
+                inner.fp_map.insert(req_token.clone(), Value::Object(fp_obj.clone()));
                 drop(inner);
-                state.save_fp_map().await;
+                let tok = req_token.clone();
+                let val = Value::Object(fp_obj);
+                tokio::task::spawn_blocking(move || {
+                    AppState::save_item_to_db("fp_cache", &tok, &val);
+                });
             }
         }
 

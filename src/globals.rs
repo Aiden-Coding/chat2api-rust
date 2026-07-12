@@ -5,17 +5,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Serialize, Deserialize};
 use log::{info, error};
+use rusqlite::{Connection, params};
 use crate::config::Config;
 
 // 本地持久化保存各种运行状态和 Token 关系的常量数据文件路径
 const DATA_FOLDER: &str = "data";
 const TOKENS_FILE: &str = "data/token.txt";
-const REFRESH_MAP_FILE: &str = "data/refresh_map.json";
 const ERROR_TOKENS_FILE: &str = "data/error_token.txt";
-const WSS_MAP_FILE: &str = "data/wss_map.json";
-const FP_FILE: &str = "data/fp_map.json";
-const SEED_MAP_FILE: &str = "data/seed_map.json";
-const CONVERSATION_MAP_FILE: &str = "data/conversation_map.json";
+const DATABASE_FILE: &str = "data/data.db";
 
 /// 记录 WebSocket 握手状态与 URL 映射的元数据结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,42 +57,47 @@ impl AppState {
             let _ = fs::create_dir_all(DATA_FOLDER);
         }
 
-        // 1. 加载主 tokens.txt 文本列表
-        let mut token_list = Vec::new();
-        if Path::new(TOKENS_FILE).exists() {
-            if let Ok(content) = fs::read_to_string(TOKENS_FILE) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                        token_list.push(trimmed.to_string());
+        // 3. 从 SQLite 反序列化加载各个映射表
+        let conn = Self::init_db();
+        let refresh_map = Self::load_map_from_db(&conn, "refresh_cache");
+        let wss_map = Self::load_map_from_db(&conn, "wss_cache");
+        let fp_map = Self::load_map_from_db(&conn, "fp_cache");
+        let seed_map = Self::load_map_from_db(&conn, "seed_cache");
+        let conversation_map = Self::load_map_from_db(&conn, "conversation_cache");
+
+        // 1. 加载或平滑迁移主 tokens 列表
+        let mut token_list = Self::load_list_from_db(&conn, "tokens");
+        if token_list.is_empty() {
+            // 如果 SQLite 中没有 Token，且旧 token.txt 存在，则执行迁移并存库
+            if Path::new(TOKENS_FILE).exists() {
+                if let Ok(content) = fs::read_to_string(TOKENS_FILE) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            token_list.push(trimmed.to_string());
+                            Self::save_item_to_db("tokens", trimmed, &"");
+                        }
                     }
                 }
             }
-        } else {
-            let _ = fs::write(TOKENS_FILE, "");
         }
 
-        // 2. 加载 error_token.txt 异常账号列表
-        let mut error_token_list = Vec::new();
-        if Path::new(ERROR_TOKENS_FILE).exists() {
-            if let Ok(content) = fs::read_to_string(ERROR_TOKENS_FILE) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                        error_token_list.push(trimmed.to_string());
+        // 2. 加载或平滑迁移 error_tokens 列表
+        let mut error_token_list = Self::load_list_from_db(&conn, "error_tokens");
+        if error_token_list.is_empty() {
+            // 迁移旧 error_token.txt
+            if Path::new(ERROR_TOKENS_FILE).exists() {
+                if let Ok(content) = fs::read_to_string(ERROR_TOKENS_FILE) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            error_token_list.push(trimmed.to_string());
+                            Self::save_item_to_db("error_tokens", trimmed, &"");
+                        }
                     }
                 }
             }
-        } else {
-            let _ = fs::write(ERROR_TOKENS_FILE, "");
         }
-
-        // 3. 反序列化加载各个 JSON 结构体映射表
-        let refresh_map = Self::load_json_map(REFRESH_MAP_FILE);
-        let wss_map = Self::load_json_map(WSS_MAP_FILE);
-        let fp_map = Self::load_json_map(FP_FILE);
-        let seed_map = Self::load_json_map(SEED_MAP_FILE);
-        let conversation_map = Self::load_json_map(CONVERSATION_MAP_FILE);
 
         // 如果用户在环境变量中未配置混淆指纹，则装载默认的主流指纹名称列表
         let impersonate_list = if config.impersonate_list.is_empty() {
@@ -137,125 +139,215 @@ impl AppState {
         }
     }
 
-    /// 辅助泛型：从本地磁盘反序列化读取 JSON 字典
-    fn load_json_map<V: for<'de> Deserialize<'de>>(file_path: &str) -> HashMap<String, V> {
-        if Path::new(file_path).exists() {
-            if let Ok(content) = fs::read_to_string(file_path) {
-                if let Ok(map) = serde_json::from_str(&content) {
-                    return map;
+    /// 初始化 SQLite 数据库并创建缓存表
+    fn init_db() -> Connection {
+        let conn = Connection::open(DATABASE_FILE).expect("Failed to open SQLite database");
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS refresh_cache (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS wss_cache (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS fp_cache (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS seed_cache (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS conversation_cache (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS tokens (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS error_tokens (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        conn
+    }
+
+    /// 从指定的 SQLite 缓存表中加载数据到 HashMap 中
+    fn load_map_from_db<V: for<'de> serde::Deserialize<'de>>(
+        conn: &Connection,
+        table_name: &str,
+    ) -> HashMap<String, V> {
+        let mut map = HashMap::new();
+        let query = format!("SELECT key, val FROM {}", table_name);
+        if let Ok(mut stmt) = conn.prepare(&query) {
+            let rows = stmt.query_map([], |row| {
+                let key: String = row.get(0)?;
+                let val_str: String = row.get(1)?;
+                Ok((key, val_str))
+            });
+            if let Ok(rows) = rows {
+                for row in rows {
+                    if let Ok((key, val_str)) = row {
+                        if let Ok(val) = serde_json::from_str(&val_str) {
+                            map.insert(key, val);
+                        }
+                    }
                 }
             }
         }
-        HashMap::new()
+        map
     }
 
-    /// 辅助泛型：将指定的 JSON 映射字典优雅持久化写回至磁盘文件
-    fn save_json_map<V: Serialize>(file_path: &str, map: &HashMap<String, V>) {
-        if let Ok(content) = serde_json::to_string_pretty(map) {
-            if let Err(e) = fs::write(file_path, content) {
-                error!("写入 JSON 配置文件 {} 时发生磁盘故障: {:?}", file_path, e);
+    /// 从指定的 SQLite 缓存表中只读取 key 列作为字符串向量返回
+    fn load_list_from_db(
+        conn: &Connection,
+        table_name: &str,
+    ) -> Vec<String> {
+        let mut list = Vec::new();
+        let query = format!("SELECT key FROM {}", table_name);
+        if let Ok(mut stmt) = conn.prepare(&query) {
+            let rows = stmt.query_map([], |row| {
+                let key: String = row.get(0)?;
+                Ok(key)
+            });
+            if let Ok(rows) = rows {
+                for row in rows {
+                    if let Ok(key) = row {
+                        list.push(key);
+                    }
+                }
             }
+        }
+        list
+    }
+
+    /// 公共静态方法：同步写入单条数据到指定的 SQLite 表中
+    pub fn save_item_to_db<V: serde::Serialize>(table_name: &str, key: &str, val: &V) {
+        if let Ok(conn) = Connection::open(DATABASE_FILE) {
+            if let Ok(val_str) = serde_json::to_string(val) {
+                let query = format!("INSERT OR REPLACE INTO {} (key, val) VALUES (?1, ?2)", table_name);
+                if let Err(e) = conn.execute(&query, params![key, val_str]) {
+                    error!("写入 SQLite 表 {} 失败: {:?}", table_name, e);
+                }
+            }
+        } else {
+            error!("无法打开 SQLite 数据库以写入表 {}", table_name);
+        }
+    }
+
+    /// 公共静态方法：清空指定的 SQLite 表
+    pub fn clear_table_in_db(table_name: &str) {
+        if let Ok(conn) = Connection::open(DATABASE_FILE) {
+            let query = format!("DELETE FROM {}", table_name);
+            if let Err(e) = conn.execute(&query, []) {
+                error!("清空 SQLite 表 {} 失败: {:?}", table_name, e);
+            }
+        } else {
+            error!("无法打开 SQLite 数据库以清空表 {}", table_name);
         }
     }
 
     /// 保存当前的 Token 列表并同步写盘
     pub async fn save_token_list(&self, tokens: Vec<String>) {
-        let mut inner = self.inner.write().await;
-        inner.token_list = tokens;
-        let content = inner.token_list.join("\n");
-        if let Err(e) = fs::write(TOKENS_FILE, content) {
-            error!("无法保存 Token 列表到本地磁盘: {:?}", e);
+        {
+            let mut inner = self.inner.write().await;
+            inner.token_list = tokens.clone();
         }
+        tokio::task::spawn_blocking(move || {
+            Self::clear_table_in_db("tokens");
+            for token in tokens {
+                Self::save_item_to_db("tokens", &token, &"");
+            }
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 tokens 失败: {:?}", e));
     }
 
     /// 追加单个 Token 到内存和本地文件中
     pub async fn append_token(&self, token: &str) {
-        let mut inner = self.inner.write().await;
         let trimmed = token.trim().to_string();
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            inner.token_list.push(trimmed.clone());
-            if let Ok(mut content) = fs::read_to_string(TOKENS_FILE) {
-                if !content.ends_with('\n') && !content.is_empty() {
-                    content.push('\n');
-                }
-                content.push_str(&trimmed);
-                content.push('\n');
-                let _ = fs::write(TOKENS_FILE, content);
-            } else {
-                let _ = fs::write(TOKENS_FILE, format!("{}\n", trimmed));
+            {
+                let mut inner = self.inner.write().await;
+                inner.token_list.push(trimmed.clone());
             }
+            let tok = trimmed;
+            tokio::task::spawn_blocking(move || {
+                Self::save_item_to_db("tokens", &tok, &"");
+            }).await.unwrap_or_else(|e| error!("spawn_blocking 追加 token 失败: {:?}", e));
         }
     }
 
     /// 清空所有内存的 Token 和 error Token，并清空对应文件
     pub async fn clear_tokens(&self) {
-        let mut inner = self.inner.write().await;
-        inner.token_list.clear();
-        inner.error_token_list.clear();
-        let _ = fs::write(TOKENS_FILE, "");
-        let _ = fs::write(ERROR_TOKENS_FILE, "");
-    }
-
-    /// 刷新 Refresh 缓存字典并写盘
-    pub async fn save_refresh_map(&self) {
-        let inner = self.inner.read().await;
-        Self::save_json_map(REFRESH_MAP_FILE, &inner.refresh_map);
+        {
+            let mut inner = self.inner.write().await;
+            inner.token_list.clear();
+            inner.error_token_list.clear();
+        }
+        tokio::task::spawn_blocking(|| {
+            Self::clear_table_in_db("tokens");
+            Self::clear_table_in_db("error_tokens");
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 清空 tokens 失败: {:?}", e));
     }
 
     /// 更新并写盘 RefreshToken 映射数据
     pub async fn update_refresh_info(&self, token: String, info: serde_json::Value) {
         {
             let mut inner = self.inner.write().await;
-            inner.refresh_map.insert(token, info);
+            inner.refresh_map.insert(token.clone(), info.clone());
         }
-        self.save_refresh_map().await;
-    }
-
-    /// 刷新并写盘 Wss 映射字典
-    pub async fn save_wss_map(&self) {
-        let inner = self.inner.read().await;
-        Self::save_json_map(WSS_MAP_FILE, &inner.wss_map);
+        let tok = token;
+        let inf = info;
+        tokio::task::spawn_blocking(move || {
+            Self::save_item_to_db("refresh_cache", &tok, &inf);
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 refresh_cache 失败: {:?}", e));
     }
 
     /// 插入并保存最新的 Wss 接入状态
     pub async fn update_wss_info(&self, token: String, wss_mode: bool, wss_url: Option<String>) {
+        let now = chrono::Utc::now().timestamp();
+        let wss_info = WssInfo {
+            timestamp: now,
+            wss_url,
+            wss_mode,
+        };
         {
             let mut inner = self.inner.write().await;
-            let now = chrono::Utc::now().timestamp();
-            inner.wss_map.insert(token, WssInfo {
-                timestamp: now,
-                wss_url,
-                wss_mode,
-            });
+            inner.wss_map.insert(token.clone(), wss_info.clone());
         }
-        self.save_wss_map().await;
-    }
-
-    /// 刷新并持久化写盘浏览器伪装指纹 (JA3/UserAgent)
-    pub async fn save_fp_map(&self) {
-        let inner = self.inner.read().await;
-        Self::save_json_map(FP_FILE, &inner.fp_map);
-    }
-
-    /// 刷新并持久化写盘 Seed 映射关系
-    pub async fn save_seed_map(&self) {
-        let inner = self.inner.read().await;
-        Self::save_json_map(SEED_MAP_FILE, &inner.seed_map);
+        let tok = token;
+        tokio::task::spawn_blocking(move || {
+            Self::save_item_to_db("wss_cache", &tok, &wss_info);
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 wss_cache 失败: {:?}", e));
     }
 
     /// 清空会话隔离关系的种子映射，并同步回写至磁盘上
     pub async fn clear_seed_tokens(&self) {
-        let mut inner = self.inner.write().await;
-        inner.seed_map.clear();
-        inner.conversation_map.clear();
-        Self::save_json_map(SEED_MAP_FILE, &inner.seed_map);
-        Self::save_json_map(CONVERSATION_MAP_FILE, &inner.conversation_map);
+        {
+            let mut inner = self.inner.write().await;
+            inner.seed_map.clear();
+            inner.conversation_map.clear();
+        }
+        tokio::task::spawn_blocking(|| {
+            Self::clear_table_in_db("seed_cache");
+            Self::clear_table_in_db("conversation_cache");
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 清空 seed 和 conversation 缓存失败: {:?}", e));
     }
 
-    /// 刷新并写盘当前会话与 Token 的映射关系
-    pub async fn save_conversation_map(&self) {
-        let inner = self.inner.read().await;
-        Self::save_json_map(CONVERSATION_MAP_FILE, &inner.conversation_map);
+    /// 刷新并写盘当前会话与 Token 的映射关系 (已废弃，保留空实现以兼容)
+    pub async fn save_conversation_map(&self) {}
+
+    /// 更新会话和 Token 的映射关系
+    pub async fn update_conversation_info(&self, conversation_id: String, token: serde_json::Value) {
+        {
+            let mut inner = self.inner.write().await;
+            inner.conversation_map.insert(conversation_id.clone(), token.clone());
+        }
+        let cid = conversation_id;
+        let tok = token;
+        tokio::task::spawn_blocking(move || {
+            Self::save_item_to_db("conversation_cache", &cid, &tok);
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 conversation_cache 失败: {:?}", e));
     }
 
     /// 当某个 Token 触发 OpenAI 429 会话限流时，本地记录它的限制模型与释放截止时间 (UTC+Local)

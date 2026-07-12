@@ -222,6 +222,19 @@ pub async fn error_tokens(
     }))
 }
 
+/// 获取当前所有 Token 列表：GET /tokens/list
+#[get("/tokens/list")]
+pub async fn get_token_list(
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let inner = state.inner.read().await;
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "tokens": inner.token_list,
+        "error_tokens": inner.error_token_list
+    }))
+}
+
 /// 快速追加单个 Token 到内存和文件：GET /tokens/add/{token}
 #[get("/tokens/add/{token}")]
 pub async fn add_token(

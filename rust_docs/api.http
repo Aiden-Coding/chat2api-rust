@@ -58,3 +58,6 @@ POST {{host}}/tokens/error
 
 ### 追加单个 Token
 GET {{host}}/tokens/add/your_single_token_here
+
+### 获取所有 Token 列表
+GET {{host}}/tokens/list

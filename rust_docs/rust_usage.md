@@ -139,7 +139,12 @@ curl --location 'http://127.0.0.1:5005/v1/chat/completions' \
 * **访问地址**：`GET /tokens` (或 `GET /{{API_PREFIX}}/tokens`)
 * **功能**：提供可视化的界面进行批量 Token（支持 AccessToken 与 RefreshToken）的导入、清空，并直观显示目前后台活跃的健康 Token 数量。
 
-### 3. 会话隔离种子清理
+### 3. 获取所有 Token 列表 API
+
+* **请求地址**：`GET /tokens/list` (或 `GET /{{API_PREFIX}}/tokens/list`)
+* **功能**：以 JSON 格式统一返回内存和 SQLite 数据库中保存的所有主 Token 列表（`tokens`）以及失效拉黑账号列表（`error_tokens`）。
+
+### 4. 会话隔离种子清理
 
 * **请求地址**：`POST /seed_tokens/clear` (或 `POST /{{API_PREFIX}}/seed_tokens/clear`)
-* **功能**：重置并清空保存在本地的随机 Seed 种子与会话隔离关系图（`seed_map.json` / `conversation_map.json`）。
+* **功能**：重置并清空保存在 SQLite 数据库中 `seed_cache` 与 `conversation_cache` 表对应的映射数据。
