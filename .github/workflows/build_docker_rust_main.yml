@@ -49,18 +49,22 @@ jobs:
 
       - name: Set target images
         id: set_images
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |
           IMAGES="ghcr.io/${{ github.repository }}-rust"
-          if [ "${{ secrets.DOCKER_USERNAME }}" != "" ]; then
+          if [ "$DOCKER_USERNAME" != "" ]; then
             IMAGES="${IMAGES}
-          ${{ secrets.DOCKER_USERNAME }}/chat2api-rust"
+          ${DOCKER_USERNAME}/chat2api-rust"
           fi
           echo "images<<EOF" >> $GITHUB_OUTPUT
           echo "$IMAGES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker Hub
-        if: "${{ secrets.DOCKER_USERNAME != '' }}"
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        if: env.DOCKER_USERNAME != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
