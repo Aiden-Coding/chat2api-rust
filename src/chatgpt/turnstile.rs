@@ -1,3 +1,6 @@
+// 本文件包含在未配置远程 Turnstile Solver 求解器时，
+// 本地通过模拟还原官方混淆的解密算法，用于解算并获取 Sentinel 握手要求中的 Turnstile Token。
+// 逻辑深度对齐官网混淆 JS 运行的状态机。
 use std::collections::HashMap;
 use rand::Rng;
 
@@ -267,7 +270,11 @@ fn func_19(process_map: &mut HashMap<String, serde_json::Value>, args: &[serde_j
     }
 }
 
+/// 本地 Turnstile 解算的核心入口方法
+/// dx: Sentinel 返回的密文数据段
+/// p: Sentinel 握手请求参数 p
 pub fn process_turnstile(dx: &str, p: &str) -> String {
+    // 记录解密启动时间，用于在状态机 func_17 中计算相对解算流逝时间 (模拟真实浏览器 JS 的执行耗时)
     let start_time = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as f64 / 1e9;
 
     let decoded_bytes = match base64::Engine::decode(&base64::prelude::BASE64_STANDARD, dx) {

@@ -1,3 +1,5 @@
+// 本文件主要用于处理 OpenAI 接口请求/响应与 ChatGPT 官方格式的相互转换
+// 包含流式 Event-Stream 的正则解析、提取代码块/生成的图片文件、计算 Token 及进行答复重组拼接。
 use std::collections::HashMap;
 use std::sync::Arc;
 use rand::seq::SliceRandom;
@@ -67,19 +69,24 @@ pub fn format_messages_with_url(content: &str) -> Value {
     Value::Array(content_arr)
 }
 
+/// 将客户端标准 OpenAI 格式的 messages 列表，转换为 ChatGPT 官网后端的多模态消息协议格式
+/// service: ChatService 实例（包含网络文件上传方法）
+/// api_messages: 原始 JSON 消息数组
+/// upload_by_url: 是否开启根据内容中的图片 URL 进行自动多模态识别上传
 pub async fn api_messages_to_chat(
     service: &ChatService,
     api_messages: &Value,
     upload_by_url: bool,
 ) -> Result<(Value, usize), actix_web::Error> {
     let mut chat_messages = Vec::new();
-    let mut file_tokens = 0;
+    let mut file_tokens = 0; // 累计上传文件的消耗 Token 预算
 
     if let Some(arr) = api_messages.as_array() {
         for msg in arr {
             let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
             let mut content_val = msg.get("content").cloned().unwrap_or(Value::Null);
 
+            // 如果配置了通过文本里携带图片 URL 直接提取上传
             if upload_by_url {
                 if let Some(text_str) = content_val.as_str() {
                     content_val = format_messages_with_url(text_str);

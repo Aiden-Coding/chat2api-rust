@@ -8,9 +8,12 @@ use sha3::{Digest, Sha3_512};
 use uuid::Uuid;
 use log::info;
 
+// 模拟的 CPU 核心数选项，用于解决 POW 混淆
 const CORES: &[u32] = &[8, 16, 24, 32];
+// 美东标准时间的显示格式
 const TIME_LAYOUT: &str = "%a %b %d %Y %H:%M:%S";
 
+// 拟态解算需要的 navigator 属性特征集，模拟真实浏览器指纹
 const NAVIGATOR_KEY: &[&str] = &[
     "registerProtocolHandler−function registerProtocolHandler() { [native code] }",
     "storage−[object StorageManager]",
@@ -156,12 +159,14 @@ const WINDOW_KEY: &[&str] = &[
     "__SSG_MANIFEST", "__intercomAssignLocation", "__intercomReloadLocation"
 ];
 
+/// 模拟获取美东时区 (GMT-0500) 的格式化时间文本
 pub fn get_parse_time() -> String {
     let timezone = FixedOffset::west_opt(5 * 3600).unwrap();
     let now = Utc::now().with_timezone(&timezone);
     format!("{} GMT-0500 (Eastern Standard Time)", now.format(TIME_LAYOUT))
 }
 
+/// 组装解密 POW 参数所需的动态配置数组
 pub fn get_config(user_agent: &str, cached_dpl: &str, cached_script: &str) -> serde_json::Value {
     let mut rng = rand::thread_rng();
     
@@ -172,8 +177,7 @@ pub fn get_config(user_agent: &str, cached_dpl: &str, cached_script: &str) -> se
     let win_key = *WINDOW_KEY.choose(&mut rng).unwrap();
 
     let now_ms = chrono::Utc::now().timestamp_millis() as f64;
-    // 模仿 python time.perf_counter() * 1000
-    // 我们用系统自启动时间模拟，或者用一个随机的大浮点数
+    // 模仿浏览器高精度计时器的相对表现偏移
     let perf_ms = rng.gen_range(1000.0..50000.0);
     let time_diff = now_ms - perf_ms;
 
@@ -181,13 +185,13 @@ pub fn get_config(user_agent: &str, cached_dpl: &str, cached_script: &str) -> se
         screen_size,
         get_parse_time(),
         4294705152u64,
-        0, // 将会在计算时动态替换
+        0, // 在解算时由循环中动态生成的自增值填充替换
         user_agent,
         cached_script,
         cached_dpl,
         "en-US",
         "en-US,es-US,en,es",
-        0, // 将会在计算时动态替换
+        0, // 在解算时由循环中动态生成的自增值右移 1 位填充替换
         nav_key,
         doc_key,
         win_key,
@@ -199,14 +203,16 @@ pub fn get_config(user_agent: &str, cached_dpl: &str, cached_script: &str) -> se
     ])
 }
 
+/// 对外暴露的 POW 求解函数，封装了计时和最终结果包装
 pub fn get_answer_token(seed: &str, diff: &str, config: &serde_json::Value) -> (String, bool) {
     let start = Instant::now();
     let (answer, solved) = generate_answer(seed, diff, config);
     let elapsed = start.elapsed();
-    info!("diff: {}, time: {:.3}ms, solved: {}", diff, elapsed.as_secs_f64() * 1000.0, solved);
+    info!("工作量证明难度: {}, 计算耗时: {:.3}ms, 成功解出: {}", diff, elapsed.as_secs_f64() * 1000.0, solved);
     (format!("gAAAAAB{}", answer), solved)
 }
 
+/// Rayon 多核并行高速解算工作量证明的核心函数
 pub fn generate_answer(seed: &str, diff: &str, config: &serde_json::Value) -> (String, bool) {
     let diff_len = match hex::decode(diff) {
         Ok(bytes) => bytes.len(),
@@ -219,31 +225,27 @@ pub fn generate_answer(seed: &str, diff: &str, config: &serde_json::Value) -> (S
 
     let seed_bytes = seed.as_bytes();
     
-    // config 应当是一个包含 18 个元素的 json 数组
+    // config 数组长度验证
     let config_arr = match config.as_array() {
         Some(arr) if arr.len() >= 18 => arr,
         _ => return (String::new(), false),
     };
 
-    // 构造拼接 JSON 的第一部分，包含前 3 个元素：config[0..3] -> 去掉尾部的 ']'，再加上 ','
+    // 为规避多线程环境下反复进行大数组序列化，预先将 JSON 切片进行局部二进制化拼接以极大提升哈希扫描性能
     let part1_json = serde_json::to_string(&config_arr[0..3]).unwrap();
     let part1_bytes = format!("{},", &part1_json[..part1_json.len() - 1]).into_bytes();
 
-    // 构造拼接 JSON 的第二部分，包含 config[4..9] -> 去掉头尾的 '[' 和 ']'，再加上前后 ','
     let part2_json = serde_json::to_string(&config_arr[4..9]).unwrap();
     let part2_bytes = format!(",{},", &part2_json[1..part2_json.len() - 1]).into_bytes();
 
-    // 构造拼接 JSON 的第三部分，包含 config[10..] -> 去掉头部的 '['，再加上 ','
     let part3_json = serde_json::to_string(&config_arr[10..]).unwrap();
     let part3_bytes = format!(",{}", &part3_json[1..]).into_bytes();
 
-    // 在 0..500000 范围内，利用 Rayon 并行计算寻找答案
+    // 在 0..500000 范围内并行迭代，多核调度解决哈希前缀难题 (Sha3-512)
     let result = (0..500000u32).into_par_iter().find_map_any(|i| {
         let i_str_bytes = i.to_string().into_bytes();
         let j_str_bytes = (i >> 1).to_string().into_bytes();
 
-        // 拼接成完整 JSON
-        // part1 + i + part2 + (i >> 1) + part3
         let mut final_json = Vec::with_capacity(
             part1_bytes.len() + i_str_bytes.len() + part2_bytes.len() + j_str_bytes.len() + part3_bytes.len()
         );
@@ -253,7 +255,7 @@ pub fn generate_answer(seed: &str, diff: &str, config: &serde_json::Value) -> (S
         final_json.extend_from_slice(&j_str_bytes);
         final_json.extend_from_slice(&part3_bytes);
 
-        // base64 编码
+        // 进行标准 base64 编码
         let base_encoded = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, &final_json);
         
         let mut hasher = Sha3_512::new();
@@ -261,6 +263,7 @@ pub fn generate_answer(seed: &str, diff: &str, config: &serde_json::Value) -> (S
         hasher.update(base_encoded.as_bytes());
         let hash_value = hasher.finalize();
 
+        // 验证计算出的哈希前缀是否满足难度目标约束
         if hash_value[..diff_len] <= target_diff[..] {
             Some((base_encoded, true))
         } else {
@@ -271,13 +274,14 @@ pub fn generate_answer(seed: &str, diff: &str, config: &serde_json::Value) -> (S
     if let Some(res) = result {
         res
     } else {
-        // Fallback token
+        // 解算失败时的降级方案
         let fallback_content = format!("\"{}\"", seed);
         let fallback_b64 = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, fallback_content.as_bytes());
         (format!("wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D{}", fallback_b64), false)
     }
 }
 
+/// Sentinel chat-requirements 阶段获取伪 requirements 校验的 Token
 pub fn get_requirements_token(config: &serde_json::Value) -> String {
     let mut rng = rand::thread_rng();
     let seed: f64 = rng.r#gen::<f64>();
@@ -295,15 +299,12 @@ mod tests {
         let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
         let config = get_config(ua, "prod-f501fe933b3edf57aea882da888e1a544df99840", "https://chatgpt.com/backend-api/sentinel/sdk.js");
         
-        // 测试 get_requirements_token
         let req_token = get_requirements_token(&config);
         assert!(req_token.starts_with("gAAAAAC"));
 
-        // 测试 generate_answer
         let seed = "0.123456789";
         let diff = "000032";
         let (answer, solved) = generate_answer(seed, diff, &config);
         println!("solved: {}, answer len: {}", solved, answer.len());
-        // 大多情况下 500,000 次寻找 000032（3字节）是能找到解的
     }
 }

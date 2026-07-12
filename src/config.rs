@@ -2,45 +2,48 @@ use std::env;
 use std::fs;
 use log::info;
 
+/// 本项目所有的全局环境配置项结构体
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub api_prefix: Option<String>,
-    pub authorization_list: Vec<String>,
-    pub chatgpt_base_url_list: Vec<String>,
-    pub auth_key: Option<String>,
-    pub x_sign: Option<String>,
-    pub ark0se_token_url_list: Vec<String>,
-    pub proxy_url_list: Vec<String>,
-    pub sentinel_proxy_url_list: Vec<String>,
-    pub export_proxy_url: Option<String>,
-    pub file_host: Option<String>,
-    pub voice_host: Option<String>,
-    pub impersonate_list: Vec<String>,
-    pub user_agents_list: Vec<String>,
-    pub turnstile_solver_url: Option<String>,
-    pub history_disabled: bool,
-    pub pow_difficulty: String,
-    pub retry_times: usize,
-    pub conversation_only: bool,
-    pub enable_limit: bool,
-    pub upload_by_url: bool,
-    pub check_model: bool,
-    pub scheduled_refresh: bool,
-    pub random_token: bool,
-    pub oai_language: String,
-    pub enable_gateway: bool,
-    pub auto_seed: bool,
-    pub force_no_history: bool,
-    pub no_sentinel: bool,
-    pub cf_file_url: Option<String>,
-    pub version: String,
+    pub api_prefix: Option<String>,            // 自定义接口请求的前缀密码 (防止暴露)
+    pub authorization_list: Vec<String>,       // 自定义配置的 Bearer Token 授权码列表
+    pub chatgpt_base_url_list: Vec<String>,    // ChatGPT 逆向后端接口网关地址列表
+    pub auth_key: Option<String>,              // 专用授权 Header 的密钥值
+    pub x_sign: Option<String>,                // 自定义请求签名头信息
+    pub ark0se_token_url_list: Vec<String>,    // 远程解密 Arkose Token 求解接口列表
+    pub proxy_url_list: Vec<String>,           // 与官方通信时使用的主请求代理地址列表
+    pub sentinel_proxy_url_list: Vec<String>,  // Sentinel 握手请求时的特定隔离代理列表
+    pub export_proxy_url: Option<String>,      // 多模态资源下载的出口防泄密代理
+    pub file_host: Option<String>,             // 静态文件服务器 Host 覆盖
+    pub voice_host: Option<String>,            // 语音服务 Host 覆盖
+    pub impersonate_list: Vec<String>,         // 拟态浏览器套接字握手列表 (如 chrome100)
+    pub user_agents_list: Vec<String>,         // 随机 User-Agent 请求头列表
+    pub turnstile_solver_url: Option<String>,  // 远程解密 Cloudflare Turnstile 求解器地址
+    pub history_disabled: bool,                // 会话是否不在官网存档 (默认为 true 不保存)
+    pub pow_difficulty: String,                // 设定的 POW 最小解密前缀难度 (默认 "000032")
+    pub retry_times: usize,                    // 会话出错时的轮询重试次数限制
+    pub conversation_only: bool,               // 是否直接发送会话而跳过 Sentinel 检查
+    pub enable_limit: bool,                    // 是否在本地启用频控限流拦截 (保护账号)
+    pub upload_by_url: bool,                   // 问答正文中若含图片 URL 是否自动识别上传
+    pub check_model: bool,                     // 是否校验客户端传入模型的存在性
+    pub scheduled_refresh: bool,               // 是否启动后台定时自动刷新 Token 令牌的任务
+    pub random_token: bool,                    // 账号池选用策略 (true 为随机抽取，false 为顺序轮询)
+    pub oai_language: String,                  // 传给 OpenAI 后端的首选界面显示语言
+    pub enable_gateway: bool,                  // 是否允许运行官网镜像网关界面 (tokens/login/web UI)
+    pub auto_seed: bool,                       // 官网镜像下是否允许通过 seed 隔离并随机绑定账号
+    pub force_no_history: bool,                // 是否强行不记录会话历史
+    pub no_sentinel: bool,                     // 是否直接剔除 Sentinel 头参数
+    pub cf_file_url: Option<String>,           // 使用 Cloudflare Workers 代理抓取下载多模态资源
+    pub version: String,                       // 程序读取 version.txt 的当前版本号
 }
 
+/// 辅助解析字符串变量是否为 true-like 布尔类型
 fn parse_bool(val: &str) -> bool {
     let lower = val.to_lowercase();
     lower == "true" || lower == "1" || lower == "t" || lower == "y" || lower == "yes"
 }
 
+/// 辅助根据英文逗号分隔环境变量字符串为 String 数组
 fn split_comma(val: &str) -> Vec<String> {
     if val.is_empty() {
         Vec::new()
@@ -49,15 +52,18 @@ fn split_comma(val: &str) -> Vec<String> {
     }
 }
 
+/// 将 JSON 数组格式的环境变量 (例如: ["chrome100","chrome120"]) 还原解析为 Vec<String>
 fn parse_json_array(val: &str) -> Vec<String> {
     serde_json::from_str(val).unwrap_or_else(|_| Vec::new())
 }
 
 impl Config {
+    /// 从 `.env` 配置文件或系统环境变量中加载所有的环境参数
     pub fn load() -> Self {
-        // 尝试加载 .env 文件，忽略错误（如果不存在）
+        // 尝试加载本地根目录的 .env 文件并注入为进程变量，忽略不存在的错误
         let _ = dotenvy::dotenv();
 
+        // 获取版本号信息
         let version = fs::read_to_string("version.txt")
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "0.1.0".to_string());
@@ -182,21 +188,23 @@ impl Config {
             version,
         };
 
+        // 打印系统装载配置成功日志
         config.print_log();
 
         config
     }
 
+    /// 格式化控制台输出当前系统运行的环境变量明细日志
     fn print_log(&self) {
         info!("------------------------------------------------------------");
         info!("Chat2Api Rust {} | https://github.com/lanqian528/chat2api", self.version);
         info!("------------------------------------------------------------");
-        info!("Environment variables:");
-        info!("------------------------- Security -------------------------");
+        info!("系统装载的环境变量明细如下:");
+        info!("------------------------- 安全配置 -------------------------");
         info!("API_PREFIX:        {:?}", self.api_prefix);
         info!("AUTHORIZATION:     {:?}", self.authorization_list);
         info!("AUTH_KEY:          {:?}", self.auth_key);
-        info!("------------------------- Request --------------------------");
+        info!("------------------------- 网络请求 -------------------------");
         info!("CHATGPT_BASE_URL:  {:?}", self.chatgpt_base_url_list);
         info!("PROXY_URL:         {:?}", self.proxy_url_list);
         info!("EXPORT_PROXY_URL:  {:?}", self.export_proxy_url);
@@ -205,7 +213,7 @@ impl Config {
         info!("IMPERSONATE:       {:?}", self.impersonate_list);
         info!("USER_AGENTS:       {:?}", self.user_agents_list);
         info!("CF_FILE_URL:       {:?}", self.cf_file_url);
-        info!("---------------------- Functionality -----------------------");
+        info!("---------------------- 接口功能参数 -----------------------");
         info!("HISTORY_DISABLED:  {}", self.history_disabled);
         info!("POW_DIFFICULTY:    {}", self.pow_difficulty);
         info!("RETRY_TIMES:       {}", self.retry_times);
@@ -216,7 +224,7 @@ impl Config {
         info!("SCHEDULED_REFRESH: {}", self.scheduled_refresh);
         info!("RANDOM_TOKEN:      {}", self.random_token);
         info!("OAI_LANGUAGE:      {}", self.oai_language);
-        info!("------------------------- Gateway --------------------------");
+        info!("------------------------- 官网网关 -------------------------");
         info!("ENABLE_GATEWAY:    {}", self.enable_gateway);
         info!("AUTO_SEED:         {}", self.auto_seed);
         info!("FORCE_NO_HISTORY:  {}", self.force_no_history);

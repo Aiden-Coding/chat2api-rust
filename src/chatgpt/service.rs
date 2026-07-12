@@ -1,3 +1,5 @@
+// 本文件是 Chat2API 的核心业务实现文件，定义了 ChatService 结构体
+// 负责组装 HTTP 头、初始化不同指纹的 Client、文件代理下载、Sentinel 要求获取、POW 求解以及向后端发送会话。
 use std::collections::HashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -15,6 +17,7 @@ use crate::chatgpt::auth::{verify_token, get_req_token};
 use crate::chatgpt::pow::{get_config, get_requirements_token, get_answer_token};
 use crate::chatgpt::turnstile::process_turnstile;
 
+/// 上传至 OpenAI 的多模态附件元数据结构体
 pub struct FileMeta {
     pub file_id: String,
     pub size_bytes: usize,
