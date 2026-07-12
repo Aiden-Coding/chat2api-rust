@@ -42,11 +42,10 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // 5. 初始化并解析 Tera HTML 模板渲染引擎
-    let tera = match Tera::new("templates/**/*") {
+    let tera = match Tera::new("src/templates/**/*") {
         Ok(t) => t,
         Err(e) => {
-            log::error!("解析模板 templates 文件时遇到致命错误: {:?}", e);
+            log::error!("解析模板 src/templates 文件时遇到致命错误: {:?}", e);
             Tera::default() // 模板加载失败则使用空 Tera 以防止项目启动崩溃
         }
     };
