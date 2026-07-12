@@ -430,6 +430,17 @@ impl ChatService {
         }
         .to_string();
 
+        if config.enable_limit && !req_token.is_empty() {
+            if let Some(limit_msg) = state.handle_request_limit(&req_token, &req_model).await {
+                return Err(actix_web::error::ErrorTooManyRequests(serde_json::json!({
+                    "error": {
+                        "message": limit_msg,
+                        "type": "requests_limit_error"
+                    }
+                }).to_string()));
+            }
+        }
+
         let history_disabled = data
             .get("history_disabled")
             .and_then(|v| v.as_bool())
@@ -829,6 +840,20 @@ impl ChatService {
                     }
                     if status.as_u16() == 429 {
                         self.mark_token_error().await;
+                        if let Ok(json_err) = serde_json::from_str::<Value>(&err_text) {
+                            let clears_in = json_err.get("clears_in")
+                                .or_else(|| json_err.get("detail").and_then(|d| d.get("clears_in")))
+                                .and_then(|c| c.as_i64());
+                            if let Some(secs) = clears_in {
+                                self.state.check_is_limit(&self.req_token, &self.req_model, secs).await;
+                                return Err(actix_web::error::ErrorTooManyRequests(serde_json::json!({
+                                    "error": {
+                                        "message": format!("Rate limit clears in {} seconds", secs),
+                                        "type": "requests_limit_error"
+                                    }
+                                }).to_string()));
+                            }
+                        }
                         return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
                     }
                     Err(ErrorInternalServerError(format!(

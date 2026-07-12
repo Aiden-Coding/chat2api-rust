@@ -39,6 +39,7 @@ pub struct AppStateInner {
     pub seed_map: HashMap<String, serde_json::Value>,
     pub conversation_map: HashMap<String, serde_json::Value>,
     pub impersonate_list: Vec<String>,
+    pub limit_details: HashMap<String, HashMap<String, i64>>, // Token -> (Model -> clears_in_timestamp)
 }
 
 #[derive(Clone)]
@@ -121,6 +122,7 @@ impl AppState {
                 seed_map,
                 conversation_map,
                 impersonate_list,
+                limit_details: HashMap::new(),
             })),
         }
     }
@@ -233,5 +235,55 @@ impl AppState {
     pub async fn save_conversation_map(&self) {
         let inner = self.inner.read().await;
         Self::save_json_map(CONVERSATION_MAP_FILE, &inner.conversation_map);
+    }
+
+    // 本地频控记录
+    pub async fn check_is_limit(&self, token: &str, model: &str, clears_in: i64) {
+        if token.is_empty() {
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let clear_time = now + clears_in;
+        let mut inner = self.inner.write().await;
+        inner.limit_details
+            .entry(token.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(model.to_string(), clear_time);
+        
+        let local_dt = chrono::DateTime::<chrono::Utc>::from_timestamp(clear_time, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local))
+            .unwrap_or_else(|| chrono::Local::now());
+        info!("{}: Reached {} limit, will be cleared at {}", 
+            if token.len() > 40 { &token[..40] } else { token },
+            model,
+            local_dt.format("%Y-%m-%d %H:%M:%S")
+        );
+    }
+
+    // 本地频控拦截检查
+    pub async fn handle_request_limit(&self, token: &str, model: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+        let mut inner = self.inner.write().await;
+        if let Some(models_map) = inner.limit_details.get_mut(token) {
+            if let Some(&limit_time) = models_map.get(model) {
+                let now = chrono::Utc::now().timestamp();
+                if limit_time > now {
+                    let local_dt = chrono::DateTime::<chrono::Utc>::from_timestamp(limit_time, 0)
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                        .unwrap_or_else(|| chrono::Local::now());
+                    let msg = format!(
+                        "Request limit exceeded. You can continue with the default model now, or try again after {}",
+                        local_dt.format("%Y-%m-%d %H:%M:%S")
+                    );
+                    info!("{}", msg);
+                    return Some(msg);
+                } else {
+                    models_map.remove(model);
+                }
+            }
+        }
+        None
     }
 }

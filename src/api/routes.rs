@@ -236,3 +236,17 @@ pub async fn add_token(
         "tokens_count": active_count
     }))
 }
+
+// 清空 Seed Token 映射关系：/seed_tokens/clear
+#[post("/seed_tokens/clear")]
+pub async fn clear_seed_tokens(
+    state: web::Data<AppState>,
+) -> impl Responder {
+    state.clear_seed_tokens().await;
+    info!("Seed tokens cleared.");
+    
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "seed_tokens_count": 0
+    }))
+}

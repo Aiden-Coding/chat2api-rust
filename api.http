@@ -31,7 +31,7 @@ Authorization: Bearer {{token}}
   "messages": [
     {
       "role": "user",
-      "content": "Hello! How are you?"
+      "content": "你现在是什么模型"
     }
   ],
   "stream": true
