@@ -38,8 +38,8 @@ jobs:
           version=${{ steps.get_version.outputs.version }}
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "$version-rust-dev"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git "$version-rust-dev"
+          git tag -f "$version-rust-dev"
+          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git "$version-rust-dev"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
