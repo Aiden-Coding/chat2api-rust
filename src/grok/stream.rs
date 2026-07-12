@@ -17,18 +17,26 @@ pub struct GrokStream {
     pub input_tokens: usize,
     pub output_tokens: usize,
     pub first_chunk_sent: bool,
+    pub sieve: Option<crate::grok::tool_sieve::ToolSieve>,
+    pub tool_calls_emitted: bool,
 }
 
 impl GrokStream {
     pub fn new(
         raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
         model: String,
+        tool_names: Vec<String>,
     ) -> Self {
         let chat_id = format!(
             "chatcmpl-{}",
             &Uuid::new_v4().to_string().replace('-', "")[..29]
         );
         let created_time = chrono::Utc::now().timestamp();
+        let sieve = if !tool_names.is_empty() {
+            Some(crate::grok::tool_sieve::ToolSieve::new(tool_names))
+        } else {
+            None
+        };
         Self {
             raw_stream,
             chat_id,
@@ -40,6 +48,8 @@ impl GrokStream {
             input_tokens: 0,
             output_tokens: 0,
             first_chunk_sent: false,
+            sieve,
+            tool_calls_emitted: false,
         }
     }
 }
@@ -92,7 +102,57 @@ impl Stream for GrokStream {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => {
                     self.end = true;
-                    // Send final chunk with usage
+                    let mut output_bytes = Vec::new();
+
+                    if !self.tool_calls_emitted {
+                        if let Some(ref mut sieve) = self.sieve {
+                            if let Some(calls) = sieve.flush() {
+                                for (i, tc) in calls.iter().enumerate() {
+                                    let tc_delta = json!({
+                                        "index": i,
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    });
+                                    let chunk = json!({
+                                        "id": self.chat_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": self.created_time,
+                                        "model": self.model,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {
+                                                "role": "assistant",
+                                                "content": null,
+                                                "tool_calls": [tc_delta]
+                                            }
+                                        }]
+                                    });
+                                    output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                }
+                                let done_chunk = json!({
+                                    "id": self.chat_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": self.created_time,
+                                    "model": self.model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": "tool_calls"
+                                    }]
+                                });
+                                output_bytes.extend_from_slice(format!("data: {}\n\n", done_chunk).as_bytes());
+                                output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                                self.tool_calls_emitted = true;
+                                return Poll::Ready(Some(Ok(Bytes::from(output_bytes))));
+                            }
+                        }
+                    }
+
+                    // Send final chunk with stop
                     let mut final_choice = json!({
                         "id": self.chat_id,
                         "object": "chat.completion.chunk",
@@ -144,19 +204,82 @@ impl Stream for GrokStream {
                             if self.current_event == "response.output_text.delta" {
                                 if let Ok(obj) = serde_json::from_str::<Value>(value) {
                                     if let Some(delta_text) = obj.get("delta").and_then(|v| v.as_str()) {
-                                        let chunk = json!({
-                                            "id": self.chat_id,
-                                            "object": "chat.completion.chunk",
-                                            "created": self.created_time,
-                                            "model": self.model,
-                                            "choices": [{
-                                                "index": 0,
-                                                "delta": { "content": delta_text },
-                                                "logprobs": null,
-                                                "finish_reason": null
-                                            }]
-                                        });
-                                        output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                        if let Some(ref mut sieve) = self.sieve {
+                                            let (safe_text, parsed_calls) = sieve.feed(delta_text);
+                                            if !safe_text.is_empty() {
+                                                let chunk = json!({
+                                                    "id": self.chat_id,
+                                                    "object": "chat.completion.chunk",
+                                                    "created": self.created_time,
+                                                    "model": self.model,
+                                                    "choices": [{
+                                                        "index": 0,
+                                                        "delta": { "content": safe_text },
+                                                        "logprobs": null,
+                                                        "finish_reason": null
+                                                    }]
+                                                });
+                                                output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                            }
+                                            if let Some(calls) = parsed_calls {
+                                                for (i, tc) in calls.iter().enumerate() {
+                                                    let tc_delta = json!({
+                                                        "index": i,
+                                                        "id": tc.id,
+                                                        "type": "function",
+                                                        "function": {
+                                                            "name": tc.function.name,
+                                                            "arguments": tc.function.arguments
+                                                        }
+                                                    });
+                                                    let chunk = json!({
+                                                        "id": self.chat_id,
+                                                        "object": "chat.completion.chunk",
+                                                        "created": self.created_time,
+                                                        "model": self.model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": {
+                                                                "role": "assistant",
+                                                                "content": null,
+                                                                "tool_calls": [tc_delta]
+                                                            }
+                                                        }]
+                                                    });
+                                                    output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                                }
+                                                let done_chunk = json!({
+                                                    "id": self.chat_id,
+                                                    "object": "chat.completion.chunk",
+                                                    "created": self.created_time,
+                                                    "model": self.model,
+                                                    "choices": [{
+                                                        "index": 0,
+                                                        "delta": {},
+                                                        "finish_reason": "tool_calls"
+                                                    }]
+                                                });
+                                                output_bytes.extend_from_slice(format!("data: {}\n\n", done_chunk).as_bytes());
+                                                output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                                                self.tool_calls_emitted = true;
+                                                self.end = true;
+                                                break;
+                                            }
+                                        } else {
+                                            let chunk = json!({
+                                                "id": self.chat_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": self.created_time,
+                                                "model": self.model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": { "content": delta_text },
+                                                    "logprobs": null,
+                                                    "finish_reason": null
+                                                }]
+                                            });
+                                            output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                        }
                                     }
                                 }
                             } else if self.current_event == "response.completed" {
@@ -178,6 +301,54 @@ impl Stream for GrokStream {
                             self.current_event.clear();
                         } else if kind == "done" {
                             self.end = true;
+                            if !self.tool_calls_emitted {
+                                if let Some(ref mut sieve) = self.sieve {
+                                    if let Some(calls) = sieve.flush() {
+                                        for (i, tc) in calls.iter().enumerate() {
+                                            let tc_delta = json!({
+                                                "index": i,
+                                                "id": tc.id,
+                                                "type": "function",
+                                                "function": {
+                                                    "name": tc.function.name,
+                                                    "arguments": tc.function.arguments
+                                                }
+                                            });
+                                            let chunk = json!({
+                                                "id": self.chat_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": self.created_time,
+                                                "model": self.model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {
+                                                        "role": "assistant",
+                                                        "content": null,
+                                                        "tool_calls": [tc_delta]
+                                                    }
+                                                }]
+                                            });
+                                            output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                                        }
+                                        let done_chunk = json!({
+                                            "id": self.chat_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": self.created_time,
+                                            "model": self.model,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {},
+                                                "finish_reason": "tool_calls"
+                                            }]
+                                        });
+                                        output_bytes.extend_from_slice(format!("data: {}\n\n", done_chunk).as_bytes());
+                                        output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                                        self.tool_calls_emitted = true;
+                                        break;
+                                    }
+                                }
+                            }
+
                             let mut final_choice = json!({
                                 "id": self.chat_id,
                                 "object": "chat.completion.chunk",
@@ -222,6 +393,7 @@ pub async fn format_not_stream_response(
     let created_time = stream.created_time;
     let model = stream.model.clone();
     let mut all_text = String::new();
+    let mut tool_calls = Vec::new();
 
     while let Some(chunk_res) = stream.next().await {
         let bytes = chunk_res?;
@@ -249,6 +421,11 @@ pub async fn format_not_stream_response(
                             all_text.push_str(content_str);
                         }
                     }
+                    if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                        for tc in tcs {
+                            tool_calls.push(tc.clone());
+                        }
+                    }
                 }
             }
         }
@@ -257,6 +434,18 @@ pub async fn format_not_stream_response(
     let input_tokens = stream.input_tokens;
     let output_tokens = stream.output_tokens;
 
+    let mut message_obj = json!({
+        "role": "assistant"
+    });
+    let finish_reason = if !tool_calls.is_empty() {
+        message_obj.as_object_mut().unwrap().insert("tool_calls".to_string(), Value::Array(tool_calls));
+        message_obj.as_object_mut().unwrap().insert("content".to_string(), Value::Null);
+        "tool_calls"
+    } else {
+        message_obj.as_object_mut().unwrap().insert("content".to_string(), json!(all_text));
+        "stop"
+    };
+
     let response_json = json!({
         "id": chat_id,
         "object": "chat.completion",
@@ -264,12 +453,9 @@ pub async fn format_not_stream_response(
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": all_text
-            },
+            "message": message_obj,
             "logprobs": null,
-            "finish_reason": "stop"
+            "finish_reason": finish_reason
         }],
         "usage": {
             "prompt_tokens": input_tokens,

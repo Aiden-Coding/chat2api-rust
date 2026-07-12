@@ -106,6 +106,41 @@ Content-Type: application/json
   "stream": false
 }
 
+### 发送 Grok 会话请求 (工具调用 - 包含 tools)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "grok-4.3-fast",
+  "messages": [
+    {
+      "role": "user",
+      "content": "帮我查一下北京今天的天气如何？"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_current_weather",
+        "description": "获取指定城市的当前天气情况",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "城市名称，例如北京"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "stream": true
+}
+
 ### 获取所有 Grok Token 列表
 GET {{host}}/grok_tokens/list
 

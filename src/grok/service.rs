@@ -243,6 +243,62 @@ pub async fn handle_grok_conversation(
     let top_p = req_body.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.95);
     let reasoning_effort = req_body.get("reasoning_effort").and_then(|v| v.as_str());
 
+    // Extract tool_names and inject tool system prompt
+    let mut tool_names = Vec::new();
+    let mut messages = req_body.get("messages").cloned().unwrap_or_else(|| serde_json::json!([]));
+    
+    if let Some(tools) = req_body.get("tools").and_then(|t| t.as_array()) {
+        for tool in tools {
+            if let Some(func) = tool.get("function").and_then(|f| f.as_object()) {
+                if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                    let name_trimmed = name.trim();
+                    if !name_trimmed.is_empty() {
+                        tool_names.push(name_trimmed.to_string());
+                    }
+                }
+            }
+        }
+        
+        let tool_choice = req_body.get("tool_choice").unwrap_or(&serde_json::Value::Null);
+        let tool_prompt = build_tool_system_prompt(tools, tool_choice);
+        
+        if let Some(arr) = messages.as_array_mut() {
+            for msg in arr.iter_mut() {
+                if let Some(obj) = msg.as_object_mut() {
+                    let role = obj.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+                    if role == "assistant" {
+                        if let Some(tcs) = obj.get("tool_calls").and_then(|v| v.as_array()) {
+                            let xml = tool_calls_to_xml(tcs);
+                            let content_str = obj.get("content").and_then(|v| v.as_str()).unwrap_or("").trim();
+                            let new_content = if !content_str.is_empty() {
+                                format!("[assistant]: {}\n{}", content_str, xml)
+                            } else {
+                                format!("[assistant]:\n{}", xml)
+                            };
+                            obj.insert("content".to_string(), json!(new_content));
+                            obj.remove("tool_calls");
+                        }
+                    } else if role == "tool" {
+                        let tool_call_id = obj.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let content_str = obj.get("content").and_then(|v| v.as_str()).unwrap_or("").trim();
+                        let label = if !tool_call_id.is_empty() {
+                            format!("[tool result for {}]", tool_call_id)
+                        } else {
+                            "[tool result]".to_string()
+                        };
+                        let new_content = format!("{}:\n{}", label, content_str);
+                        obj.insert("content".to_string(), json!(new_content));
+                    }
+                }
+            }
+            let sys_msg = json!({
+                "role": "system",
+                "content": tool_prompt
+            });
+            arr.insert(0, sys_msg);
+        }
+    }
+
     for attempt in 0..=max_retries {
         if attempt > 0 {
             info!("正在重试发送 Grok 会话 (第 {}/{} 次重试)...", attempt, max_retries);
@@ -300,7 +356,7 @@ pub async fn handle_grok_conversation(
 
         // Build request payload
         let payload = build_console_payload(
-            req_body.get("messages").unwrap_or(&serde_json::json!([])),
+            &messages,
             &model,
             temperature,
             top_p,
@@ -381,7 +437,7 @@ pub async fn handle_grok_conversation(
 
         // Create GrokStream
         let raw_stream = Box::pin(response.bytes_stream());
-        let grok_stream = GrokStream::new(raw_stream, model.clone());
+        let grok_stream = GrokStream::new(raw_stream, model.clone(), tool_names.clone());
 
         if is_stream {
             return Ok(HttpResponse::Ok()
@@ -401,4 +457,129 @@ pub async fn handle_grok_conversation(
 
     let final_err = last_err.unwrap_or_else(|| ErrorInternalServerError("Unknown Grok server error"));
     Err(final_err)
+}
+
+const TOOL_SYSTEM_HEADER: &str = "\
+You have access to the following tools.
+
+AVAILABLE TOOLS:
+{tool_definitions}
+
+TOOL CALL FORMAT — follow these rules exactly:
+- When calling a tool, output ONLY the XML block below. No text before or after it.
+- <parameters> must be a single-line valid JSON object (no line breaks inside).
+- Place multiple tool calls inside ONE <tool_calls> element.
+- Do NOT use markdown code fences around the XML.
+- Do NOT output any inner monologue or explanation alongside the XML.
+
+<tool_calls>
+  <tool_call>
+    <tool_name>TOOL_NAME</tool_name>
+    <parameters>{{\"key\": \"value\"}}</parameters>
+  </tool_call>
+</tool_calls>
+
+WRONG (never do this):
+```xml
+<tool_calls>...</tool_calls>
+```
+I'll call the search tool now. <tool_calls>...</tool_calls>
+
+{tool_choice_instruction}
+NOTE: Even if you believe you cannot fulfill the request, you must still follow the WHEN TO CALL rule above.";
+
+const CHOICE_AUTO: &str = "WHEN TO CALL: Call a tool when it is clearly needed. Otherwise respond in plain text.";
+const CHOICE_NONE: &str = "WHEN TO CALL: Do NOT call any tools. Respond in plain text only.";
+const CHOICE_REQUIRED: &str = "WHEN TO CALL: You MUST output a <tool_calls> XML block. Do NOT write any plain-text reply. If you are uncertain, still call the most relevant tool with your best guess at the parameters.";
+const CHOICE_FORCED: &str = "WHEN TO CALL: You MUST output a <tool_calls> XML block calling the tool named \"{name}\". Do NOT write any plain-text reply under any circumstances.";
+
+fn format_tool_definitions(tools: &[serde_json::Value]) -> String {
+    let mut parts = Vec::new();
+    for tool in tools {
+        if let Some(obj) = tool.as_object() {
+            let func = obj.get("function").and_then(|v| v.as_object());
+            if let Some(f) = func {
+                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let desc = f.get("description").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let params = f.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({}));
+                
+                let mut lines = Vec::new();
+                lines.push(format!("Tool: {}", name));
+                if !desc.is_empty() {
+                    lines.push(format!("Description: {}", desc));
+                }
+                lines.push(format!("Parameters: {}", params.to_string()));
+                parts.push(lines.join("\n"));
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn build_choice_instruction(tool_choice: &serde_json::Value) -> String {
+    if tool_choice.is_null() {
+        return CHOICE_AUTO.to_string();
+    }
+    if let Some(s) = tool_choice.as_str() {
+        match s {
+            "auto" => CHOICE_AUTO.to_string(),
+            "none" => CHOICE_NONE.to_string(),
+            "required" => CHOICE_REQUIRED.to_string(),
+            _ => CHOICE_AUTO.to_string(),
+        }
+    } else if let Some(obj) = tool_choice.as_object() {
+        let tc_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if tc_type == "none" {
+            return CHOICE_NONE.to_string();
+        }
+        if tc_type == "required" {
+            return CHOICE_REQUIRED.to_string();
+        }
+        if tc_type == "function" {
+            let forced_name = obj.get("function")
+                .and_then(|v| v.as_object())
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .trim();
+            if !forced_name.is_empty() {
+                return CHOICE_FORCED.replace("{name}", forced_name);
+            }
+        }
+        CHOICE_AUTO.to_string()
+    } else {
+        CHOICE_AUTO.to_string()
+    }
+}
+
+fn build_tool_system_prompt(tools: &[serde_json::Value], tool_choice: &serde_json::Value) -> String {
+    let tool_defs = format_tool_definitions(tools);
+    let choice_instr = build_choice_instruction(tool_choice);
+    TOOL_SYSTEM_HEADER
+        .replace("{tool_definitions}", &tool_defs)
+        .replace("{tool_choice_instruction}", &choice_instr)
+}
+
+fn tool_calls_to_xml(tool_calls: &[serde_json::Value]) -> String {
+    let mut lines = vec!["<tool_calls>".to_string()];
+    for tc in tool_calls {
+        if let Some(obj) = tc.as_object() {
+            let func = obj.get("function").and_then(|v| v.as_object());
+            if let Some(f) = func {
+                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args = f.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+                let norm_args = if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
+                    val.to_string()
+                } else {
+                    args.to_string()
+                };
+                lines.push("  <tool_call>".to_string());
+                lines.push(format!("    <tool_name>{}</tool_name>", name));
+                lines.push(format!("    <parameters>{}</parameters>", norm_args));
+                lines.push("  </tool_call>".to_string());
+            }
+        }
+    }
+    lines.push("</tool_calls>".to_string());
+    lines.join("\n")
 }
