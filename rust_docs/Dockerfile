@@ -5,6 +5,11 @@ FROM rust:latest AS builder
 
 WORKDIR /usr/src/chat2api
 
+# 安装编译所需的 C 工具链、CMake 和 Perl (boring-sys 编译所必需)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends cmake clang perl make && \
+    rm -rf /var/lib/apt/lists/*
+
 # 1. 拷贝 Cargo 依赖清单文件
 COPY Cargo.toml Cargo.lock ./
 
