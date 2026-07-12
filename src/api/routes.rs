@@ -178,8 +178,9 @@ pub async fn upload_post(
     for line in lines {
         let trimmed = line.trim();
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            state.append_token(trimmed).await;
-            added_count += 1;
+            if state.append_token(trimmed).await {
+                added_count += 1;
+            }
         }
     }
 
@@ -192,7 +193,8 @@ pub async fn upload_post(
 
     HttpResponse::Ok().json(json!({
         "status": "success",
-        "tokens_count": active_count
+        "tokens_count": active_count,
+        "added_count": added_count
     }))
 }
 
@@ -232,6 +234,28 @@ pub async fn get_token_list(
         "status": "success",
         "tokens": inner.token_list,
         "error_tokens": inner.error_token_list
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteTokensRequest {
+    pub tokens: Vec<String>,
+}
+
+/// 批量/单个删除 Token：POST /tokens/delete
+#[post("/tokens/delete")]
+pub async fn delete_tokens(
+    body: web::Json<DeleteTokensRequest>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let req = body.into_inner();
+    let count = req.tokens.len();
+    state.delete_tokens(req.tokens).await;
+    info!("已成功从池子中删除了 {} 个 Token 凭证。", count);
+    
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "deleted_count": count
     }))
 }
 

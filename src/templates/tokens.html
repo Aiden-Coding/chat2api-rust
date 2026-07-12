@@ -1,82 +1,533 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta content="width=device-width, initial-scale=1.0" name="viewport">
-    <title>Tokens 管理</title>
+    <title>Tokens 控制中心</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;800&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        outfit: ['Outfit', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0b0f19;
+            font-family: 'Inter', sans-serif;
+        }
+        .glass-panel {
+            background: rgba(17, 24, 39, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .btn-gradient {
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+            transition: all 0.3s ease;
+        }
+        .btn-gradient:hover {
+            filter: brightness(1.1);
+            box-shadow: 0 0 20px rgba(168, 85, 247, 0.4);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const apiPrefix = "{{ api_prefix }}";
-            const uploadForm = document.getElementById('uploadForm');
-            const clearForm = document.getElementById('clearForm');
-            const errorButton = document.getElementById('errorButton');
-
-            if (apiPrefix === "None") {
-                uploadForm.action = "/tokens/upload";
-                clearForm.action = "/tokens/clear";
-                errorButton.dataset.api = "/tokens/error";
-            } else {
-                uploadForm.action = `/${apiPrefix}/tokens/upload`;
-                clearForm.action = `/${apiPrefix}/tokens/clear`;
-                errorButton.dataset.api = `/${apiPrefix}/tokens/error`;
+            let baseApi = "";
+            if (apiPrefix !== "None" && apiPrefix.trim() !== "") {
+                baseApi = `/${apiPrefix}`;
             }
 
-            errorButton.addEventListener('click', async () => {
-                const response = await fetch(errorButton.dataset.api, {
-                    method: 'POST',
+            const activeCountEl = document.getElementById('activeCount');
+            const uploadForm = document.getElementById('uploadForm');
+            const textInput = document.getElementById('textInput');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            
+            // List panel elements
+            const searchInput = document.getElementById('searchInput');
+            const listContainer = document.getElementById('listContainer');
+            const tabActive = document.getElementById('tabActive');
+            const tabError = document.getElementById('tabError');
+            const copyAllBtn = document.getElementById('copyAllBtn');
+            const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+            const selectedCount = document.getElementById('selectedCount');
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const activeTabCount = document.getElementById('activeTabCount');
+            const errorTabCount = document.getElementById('errorTabCount');
+            
+            let allActiveTokens = [];
+            let allErrorTokens = [];
+            let currentTab = 'active'; // 'active' or 'error'
+
+            // Notification / Toast
+            function showToast(message, type = 'success') {
+                const toastContainer = document.getElementById('toastContainer');
+                const toast = document.createElement('div');
+                toast.className = `flex items-center p-4 rounded-xl shadow-lg border transition-all duration-300 transform translate-y-4 opacity-0 glass-panel`;
+                
+                let icon = '';
+                let borderClass = '';
+                if (type === 'success') {
+                    icon = `<svg class="w-5 h-5 text-emerald-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+                    borderClass = 'border-emerald-500/30';
+                } else if (type === 'error') {
+                    icon = `<svg class="w-5 h-5 text-rose-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+                    borderClass = 'border-rose-500/30';
+                } else {
+                    icon = `<svg class="w-5 h-5 text-amber-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`;
+                    borderClass = 'border-amber-500/30';
+                }
+                
+                toast.classList.add(borderClass);
+                toast.innerHTML = `
+                    ${icon}
+                    <span class="text-sm font-medium text-slate-200">${message}</span>
+                `;
+                toastContainer.appendChild(toast);
+                
+                // Animate in
+                setTimeout(() => {
+                    toast.classList.remove('translate-y-4', 'opacity-0');
+                }, 10);
+                
+                // Animate out & remove
+                setTimeout(() => {
+                    toast.classList.add('translate-y-4', 'opacity-0');
+                    setTimeout(() => {
+                        toast.remove();
+                    }, 300);
+                }, 3000);
+            }
+
+            // Set loading state
+            function setLoading(btn, isLoading, originalText) {
+                if (isLoading) {
+                    btn.disabled = true;
+                    btn.innerHTML = `
+                        <svg class="animate-spin h-5 w-5 text-white inline-block mr-2" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg> 处理中...
+                    `;
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+            }
+
+            // Load and Render Lists
+            async function fetchAllLists() {
+                try {
+                    const response = await fetch(`${baseApi}/tokens/list`);
+                    if (response.ok) {
+                        const result = await response.json();
+                        allActiveTokens = result.tokens || [];
+                        allErrorTokens = result.error_tokens || [];
+                        
+                        // Update Badges Count
+                        activeTabCount.innerText = allActiveTokens.length;
+                        errorTabCount.innerText = allErrorTokens.length;
+                        activeCountEl.innerText = allActiveTokens.length;
+
+                        resetCheckboxSelection();
+                        renderCurrentList();
+                    } else {
+                        showToast('获取 Token 列表失败', 'error');
+                    }
+                } catch (err) {
+                    showToast('无法连接数据库进行查询', 'error');
+                }
+            }
+
+            function renderCurrentList() {
+                const searchVal = searchInput.value.toLowerCase().trim();
+                const list = currentTab === 'active' ? allActiveTokens : allErrorTokens;
+                
+                const filtered = list.filter(token => token.toLowerCase().includes(searchVal));
+
+                if (filtered.length === 0) {
+                    listContainer.innerHTML = `
+                        <div class="flex flex-col items-center justify-center h-full py-20 text-slate-500">
+                            <svg class="w-8 h-8 mb-2 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0a2 2 0 01-2 2H6a2 2 0 01-2-2m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m9-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span class="text-xs">暂无匹配的数据记录</span>
+                        </div>
+                    `;
+                    return;
+                }
+
+                listContainer.innerHTML = filtered.map((token, idx) => {
+                    let truncated = token;
+                    if (token.length > 50) {
+                        truncated = token.substring(0, 18) + "..." + token.substring(token.length - 18);
+                    }
+                    return `
+                        <div class="flex justify-between items-center p-3 rounded-xl bg-slate-800/30 border border-slate-700/20 group hover:border-indigo-500/30 transition-all duration-200">
+                            <div class="flex items-center space-x-3 overflow-hidden mr-2">
+                                <input type="checkbox" class="token-checkbox text-indigo-600 bg-slate-950 border-slate-800 rounded focus:ring-indigo-500/40 w-3.5 h-3.5 flex-shrink-0 cursor-pointer" value="${token}" onchange="window.updateCheckboxState()">
+                                <span class="text-xs font-mono text-indigo-400/80">#${idx + 1}</span>
+                                <span class="text-xs font-mono text-slate-300 break-all select-all truncate" title="${token}">${truncated}</span>
+                            </div>
+                            <div class="flex items-center space-x-1 flex-shrink-0">
+                                <button onclick="navigator.clipboard.writeText('${token}'); window.showCopySuccess()" class="text-slate-400 hover:text-indigo-400 p-1.5 rounded-lg hover:bg-slate-700/30 transition duration-150" title="复制完整 Token">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+                                </button>
+                                <button onclick="window.deleteSingleToken('${token}')" class="text-slate-400 hover:text-rose-400 p-1.5 rounded-lg hover:bg-slate-700/30 transition duration-150" title="从数据库中删除">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            window.showCopySuccess = () => {
+                showToast('已复制单条 Token 到剪贴板');
+            };
+
+            // AJAX Delete request handler
+            window.performDelete = async (tokens) => {
+                try {
+                    const response = await fetch(`${baseApi}/tokens/delete`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ tokens })
+                    });
+
+                    if (response.ok) {
+                        showToast(`已成功删除 ${tokens.length} 个 Token 凭证`);
+                        await fetchAllLists();
+                    } else {
+                        showToast('删除失败，请检查网络或授权', 'error');
+                    }
+                } catch (err) {
+                    showToast('连接服务端发生异常', 'error');
+                }
+            };
+
+            window.deleteSingleToken = (token) => {
+                if (!confirm('确定要从数据库和内存中删除该条 Token 凭证吗？此操作不可逆。')) {
+                    return;
+                }
+                window.performDelete([token]);
+            };
+
+            // Checkbox selection controller
+            window.updateCheckboxState = () => {
+                const checkboxes = document.querySelectorAll('.token-checkbox');
+                const checked = Array.from(checkboxes).filter(cb => cb.checked);
+                
+                selectedCount.innerText = checked.length;
+                if (checked.length > 0) {
+                    deleteSelectedBtn.classList.remove('hidden');
+                } else {
+                    deleteSelectedBtn.classList.add('hidden');
+                }
+                
+                if (checkboxes.length > 0 && checked.length === checkboxes.length) {
+                    selectAllCheckbox.checked = true;
+                } else {
+                    selectAllCheckbox.checked = false;
+                }
+            };
+
+            function resetCheckboxSelection() {
+                selectAllCheckbox.checked = false;
+                selectedCount.innerText = '0';
+                deleteSelectedBtn.classList.add('hidden');
+            }
+
+            // Select All Checkbox trigger
+            selectAllCheckbox.addEventListener('change', (e) => {
+                const checkboxes = document.querySelectorAll('.token-checkbox');
+                checkboxes.forEach(cb => cb.checked = e.target.checked);
+                window.updateCheckboxState();
+            });
+
+            // Delete Selected Action
+            deleteSelectedBtn.addEventListener('click', () => {
+                const checkboxes = document.querySelectorAll('.token-checkbox');
+                const checked = Array.from(checkboxes).filter(cb => cb.checked);
+                const tokens = checked.map(cb => cb.value);
+                if (tokens.length === 0) return;
+                
+                if (!confirm(`确定要批量删除已勾选的 ${tokens.length} 个 Token 凭证吗？此操作不可逆。`)) {
+                    return;
+                }
+                window.performDelete(tokens);
+            });
+
+            // Upload Form AJAX Submit
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const text = textInput.value.trim();
+                if (!text) {
+                    showToast('请输入有效的 Token 列表', 'warn');
+                    return;
+                }
+
+                setLoading(uploadBtn, true, '上传导入');
+                try {
+                    const formData = new URLSearchParams();
+                    formData.append('text', text);
+
+                    const response = await fetch(`${baseApi}/tokens/upload`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        textInput.value = '';
+                        if (result.added_count > 0) {
+                            showToast(`成功导入了 ${result.added_count} 个新 Token 凭证！`);
+                        } else {
+                            showToast('所有上传的 Token 均已存在，已自动过滤去重。', 'warn');
+                        }
+                        await fetchAllLists();
+                    } else {
+                        showToast('上传失败，请检查网络或授权', 'error');
+                    }
+                } catch (err) {
+                    showToast('连接服务端发生异常', 'error');
+                } finally {
+                    setLoading(uploadBtn, false, '上传导入');
+                }
+            });
+
+            // Clear Tokens AJAX
+            clearBtn.addEventListener('click', async () => {
+                if (!confirm('确定要清空全局所有的正常 Token 以及错误黑名单记录吗？此操作无法撤销。')) {
+                    return;
+                }
+
+                setLoading(clearBtn, true, '清空池子');
+                try {
+                    const response = await fetch(`${baseApi}/tokens/clear`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        showToast('Token 池已被清空');
+                        await fetchAllLists();
+                    } else {
+                        showToast('清空操作失败', 'error');
+                    }
+                } catch (err) {
+                    showToast('连接服务端发生异常', 'error');
+                } finally {
+                    setLoading(clearBtn, false, '清空当前 Token 池');
+                }
+            });
+
+            // Toggle Tabs
+            tabActive.addEventListener('click', () => {
+                currentTab = 'active';
+                tabActive.classList.add('text-indigo-400', 'border-indigo-500');
+                tabActive.classList.remove('text-slate-400', 'border-transparent');
+                tabError.classList.add('text-slate-400', 'border-transparent');
+                tabError.classList.remove('text-indigo-400', 'border-indigo-500');
+                resetCheckboxSelection();
+                renderCurrentList();
+            });
+
+            tabError.addEventListener('click', () => {
+                currentTab = 'error';
+                tabError.classList.add('text-indigo-400', 'border-indigo-500');
+                tabError.classList.remove('text-slate-400', 'border-transparent');
+                tabActive.classList.add('text-slate-400', 'border-transparent');
+                tabActive.classList.remove('text-indigo-400', 'border-indigo-500');
+                resetCheckboxSelection();
+                renderCurrentList();
+            });
+
+            // Fast search input
+            searchInput.addEventListener('input', () => {
+                resetCheckboxSelection();
+                renderCurrentList();
+            });
+
+            // Copy all current tab tokens
+            copyAllBtn.addEventListener('click', () => {
+                const list = currentTab === 'active' ? allActiveTokens : allErrorTokens;
+                if (list.length === 0) {
+                    showToast('无可复制的记录', 'warn');
+                    return;
+                }
+                navigator.clipboard.writeText(list.join('\n')).then(() => {
+                    showToast(`已批量复制 ${list.length} 个 Tokens`);
+                }).catch(() => {
+                    showToast('复制失败，请手动选择复制', 'error');
                 });
-                const result = await response.json();
-                const errorTokens = result.error_tokens;
-
-                const errorModal = document.getElementById('errorModal');
-                const errorModalContent = document.getElementById('errorModalContent');
-
-                errorModalContent.innerHTML = errorTokens.map(token => `<p>${token}</p>`).join('');
-                errorModal.classList.remove('hidden');
             });
 
-            document.getElementById('errorModalClose').addEventListener('click', () => {
-                document.getElementById('errorModal').classList.add('hidden');
+            // Refresh List Event
+            const refreshBtn = document.getElementById('refreshBtn');
+            const refreshIcon = document.getElementById('refreshIcon');
+            refreshBtn.addEventListener('click', async () => {
+                refreshIcon.classList.add('animate-spin');
+                await fetchAllLists();
+                setTimeout(() => {
+                    refreshIcon.classList.remove('animate-spin');
+                }, 600);
+                showToast('已拉取并同步最新数据');
             });
 
-            document.getElementById('errorModalCopy').addEventListener('click', () => {
-                const errorModalContent = document.getElementById('errorModalContent');
-                const textToCopy = errorModalContent.innerText.replace(/\n\n/g, '\n');
-                navigator.clipboard.writeText(textToCopy).then(() => {
-                    alert('错误 Tokens 已复制到剪贴板');
-                }).catch(err => {
-                    alert('复制失败，请手动复制');
-                });
-            });
+            // Init load list
+            fetchAllLists();
         });
     </script>
 </head>
-<body class="bg-gradient-to-r from-blue-200 via-purple-200 to-pink-200 flex justify-center items-center min-h-screen">
-    <div class="bg-white p-10 rounded-lg shadow-2xl w-128 text-center">
-        <h1 class="text-4xl font-extrabold text-gray-900 mb-6">Tokens 管理</h1>
-        <p class="text-gray-600 mb-4">当前可用 Tokens 数量：<span class="text-blue-600">{{ tokens_count }}</span></p>
-        <form class="mb-2" id="uploadForm" method="post">
-            <textarea class="w-full p-4 mb-4 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none" name="text" placeholder="一行一个Token，可以是 AccessToken 或 RefreshToken" rows="10"></textarea>
-            <p class="text-gray-600 mb-2">注：使用docker时如果挂载了data文件夹则重启后不需要再次上传</p>
-            <button class="w-full bg-blue-600 text-white py-3 rounded-md hover:bg-blue-700 transition duration-300 mb-2" type="submit">上传</button>
-        </form>
-        <button id="errorButton" class="w-full bg-yellow-600 text-white py-3 rounded-md hover:bg-yellow-700 transition duration-200 mt-2">查看错误Tokens</button>
-        <p class="text-gray-600 mt-2">点击清空，将会清空上传和错误的 Tokens</p>
-        <form id="clearForm" method="post">
-            <button class="w-full bg-red-600 text-white py-3 rounded-md hover:bg-red-700 transition duration-300" type="submit">清空Tokens</button>
-        </form>
-    </div>
+<body class="relative flex justify-center items-center min-h-screen overflow-x-hidden text-slate-300 py-10">
     
-    <div id="errorModal" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex justify-center items-center hidden">
-        <div class="bg-white p-6 rounded-lg shadow-lg w-150">
-            <h2 class="text-2xl font-bold mb-4">错误 Tokens</h2>
-            <div id="errorModalContent" class="list-disc list-inside text-left mb-4"></div>
-            <div class="flex justify-end space-x-4">
-                <button id="errorModalCopy" class="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition duration-300">复制</button>
-                <button id="errorModalClose" class="bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700 transition duration-300">关闭</button>
+    <!-- Background lights -->
+    <div class="absolute top-[-10%] left-[-10%] w-[800px] h-[800px] rounded-full bg-indigo-500/5 blur-[140px] pointer-events-none animate-pulse"></div>
+    <div class="absolute bottom-[-10%] right-[-10%] w-[800px] h-[800px] rounded-full bg-purple-500/5 blur-[140px] pointer-events-none animate-pulse" style="animation-delay: 2.s;"></div>
+
+    <!-- Main Grid Dashboard Layout -->
+    <div class="relative grid grid-cols-1 lg:grid-cols-12 gap-8 w-full max-w-6xl mx-6 z-10">
+        
+        <!-- Left Column: Control Panel -->
+        <div class="lg:col-span-5 glass-panel p-8 rounded-2xl shadow-2xl flex flex-col justify-between">
+            <div>
+                <!-- Header -->
+                <div class="flex flex-col items-center mb-6 text-center">
+                    <div class="relative w-14 h-14 rounded-xl bg-indigo-600/10 flex items-center justify-center border border-indigo-500/20 mb-3">
+                        <span class="absolute inline-flex h-full w-full rounded-xl bg-indigo-400 opacity-10 animate-ping"></span>
+                        <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m2 4a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1115 7z"></path></svg>
+                    </div>
+                    <h1 class="text-3xl font-black bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent tracking-tight font-outfit">Tokens 控制中心</h1>
+                    <p class="text-xs text-slate-400 mt-1">Chat2API 全局凭证与映射管理管理后台</p>
+                </div>
+
+                <!-- Metric Dashboard -->
+                <div class="flex justify-between items-center p-4 rounded-xl bg-slate-800/40 border border-slate-700/30 mb-6">
+                    <div class="text-left">
+                        <span class="text-[10px] text-indigo-400 uppercase tracking-wider font-semibold">健康活跃状态</span>
+                        <span class="text-xs text-slate-400 block mt-0.5">可用 Token 缓存数</span>
+                    </div>
+                    <div class="flex items-baseline space-x-1">
+                        <span id="activeCount" class="text-3xl font-black text-white font-outfit">{{ tokens_count }}</span>
+                        <span class="text-xs text-slate-500">个</span>
+                    </div>
+                </div>
+
+                <!-- Import Input Form -->
+                <form id="uploadForm">
+                    <div class="relative group">
+                        <textarea id="textInput" class="w-full p-4 mb-4 bg-slate-900/60 border border-slate-700/50 rounded-xl focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50 resize-none text-xs font-mono text-slate-200 placeholder-slate-500 transition-all duration-200" name="text" placeholder="多行录入，一行为一个 Token 凭证。支持 AccessToken (eyJ...) 或 RefreshToken" rows="8"></textarea>
+                        <div class="absolute bottom-6 right-3 text-[10px] text-slate-500 pointer-events-none">每行一个凭证</div>
+                    </div>
+                    
+                    <p class="text-[10px] text-slate-500 text-left mb-4 leading-relaxed">
+                        提示：当挂载了数据持久化卷时，自愈模块会在服务拉起时自动加载 SQLite 数据库中保存的 Token，无需每次开机手动重复导入。
+                    </p>
+
+                    <button id="uploadBtn" class="w-full btn-gradient text-white py-3 rounded-xl font-semibold text-sm shadow-lg hover:shadow-indigo-500/20 active:scale-[0.98] transition-all duration-200" type="submit">上传导入</button>
+                </form>
+            </div>
+
+            <!-- Footer Action -->
+            <div class="mt-6 pt-6 border-t border-slate-800/80">
+                <button id="clearBtn" class="w-full flex items-center justify-center bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 hover:text-rose-200 py-3 rounded-xl border border-rose-900/30 hover:border-rose-900/50 text-xs font-semibold transition duration-200 active:scale-[0.98]">
+                    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    清空全局当前 Token 池
+                </button>
             </div>
         </div>
+
+        <!-- Right Column: Database Token List Display Panel -->
+        <div class="lg:col-span-7 glass-panel rounded-2xl shadow-2xl flex flex-col h-[650px] overflow-hidden">
+            <!-- Header -->
+            <div class="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
+                <div>
+                    <h2 class="text-lg font-bold text-white flex items-center font-outfit">
+                        <svg class="w-5 h-5 text-indigo-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path></svg>
+                        凭证池实时明细
+                    </h2>
+                    <p class="text-[10px] text-slate-500 mt-0.5">与 SQLite 数据库直接同步，支持过滤及复制</p>
+                </div>
+                <button id="refreshBtn" class="text-slate-400 hover:text-indigo-400 p-2 rounded-lg hover:bg-slate-800 transition duration-150 flex items-center justify-center group" title="同步最新数据">
+                    <svg id="refreshIcon" class="w-4 h-4 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M21 3v5h-5"></path></svg>
+                </button>
+            </div>
+
+            <!-- Tabs Controller with Select All -->
+            <div class="px-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/20 pr-6">
+                <div class="flex space-x-6 text-xs font-medium">
+                    <button id="tabActive" class="py-4 border-b-2 border-indigo-500 text-indigo-400 transition-all duration-200 flex items-center">
+                        健康 Token
+                        <span id="activeTabCount" class="ml-1.5 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px]">0</span>
+                    </button>
+                    <button id="tabError" class="py-4 border-b-2 border-transparent text-slate-400 hover:text-slate-300 transition-all duration-200 flex items-center">
+                        失效黑名单
+                        <span id="errorTabCount" class="ml-1.5 px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px]">0</span>
+                    </button>
+                </div>
+                <label class="flex items-center text-[10px] text-slate-400 hover:text-slate-200 cursor-pointer select-none py-4">
+                    <input type="checkbox" id="selectAllCheckbox" class="mr-1.5 text-indigo-600 bg-slate-950 border-slate-800 rounded focus:ring-indigo-500/40 w-3.5 h-3.5">
+                    全选当前页
+                </label>
+            </div>
+
+            <!-- Search Bar -->
+            <div class="p-4 border-b border-slate-800/80 bg-slate-900/10">
+                <div class="relative">
+                    <input id="searchInput" type="text" class="w-full bg-slate-950/80 border border-slate-800/60 rounded-lg py-2 pl-9 pr-4 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/40 transition duration-150" placeholder="检索当前分类中的 Token 凭证...">
+                    <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                </div>
+            </div>
+
+            <!-- List Content Area (Scrollable) -->
+            <div id="listContainer" class="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar text-xs bg-slate-950/10">
+                <!-- Dynamically filled list -->
+            </div>
+
+            <!-- Actions Footer -->
+            <div class="p-5 border-t border-slate-800/80 bg-slate-900/40 flex justify-between space-x-4">
+                <button id="copyAllBtn" class="flex-1 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-300 hover:text-indigo-200 py-3 px-4 rounded-xl border border-indigo-500/20 hover:border-indigo-500/40 font-semibold text-xs transition duration-150 flex items-center justify-center active:scale-[0.98]">
+                    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                    一键批量复制本页 Token
+                </button>
+                <button id="deleteSelectedBtn" class="flex-1 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 hover:text-rose-200 py-3 px-4 rounded-xl border border-rose-900/30 hover:border-rose-900/50 font-semibold text-xs transition duration-150 flex items-center justify-center active:scale-[0.98] hidden">
+                    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    删除所选 (<span id="selectedCount">0</span>)
+                </button>
+            </div>
+        </div>
+
     </div>
+
+    <!-- Notification Toast Container -->
+    <div id="toastContainer" class="fixed top-6 right-6 flex flex-col space-y-3 z-[9999]"></div>
+
 </body>
 </html>

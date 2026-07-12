@@ -262,19 +262,24 @@ impl AppState {
         }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 tokens 失败: {:?}", e));
     }
 
-    /// 追加单个 Token 到内存和本地文件中
-    pub async fn append_token(&self, token: &str) {
+    /// 追加单个 Token 到内存和本地文件中（去重处理）
+    pub async fn append_token(&self, token: &str) -> bool {
         let trimmed = token.trim().to_string();
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
             {
                 let mut inner = self.inner.write().await;
+                if inner.token_list.contains(&trimmed) {
+                    return false; // 重复，跳过
+                }
                 inner.token_list.push(trimmed.clone());
             }
             let tok = trimmed;
             tokio::task::spawn_blocking(move || {
                 Self::save_item_to_db("tokens", &tok, &"");
             }).await.unwrap_or_else(|e| error!("spawn_blocking 追加 token 失败: {:?}", e));
+            return true;
         }
+        false
     }
 
     /// 清空所有内存的 Token 和 error Token，并清空对应文件
@@ -288,6 +293,27 @@ impl AppState {
             Self::clear_table_in_db("tokens");
             Self::clear_table_in_db("error_tokens");
         }).await.unwrap_or_else(|e| error!("spawn_blocking 清空 tokens 失败: {:?}", e));
+    }
+
+    /// 从内存和数据库中批量删除指定的 Token 凭证
+    pub async fn delete_tokens(&self, tokens_to_delete: Vec<String>) {
+        {
+            let mut inner = self.inner.write().await;
+            for token in &tokens_to_delete {
+                inner.token_list.retain(|t| t != token);
+                inner.error_token_list.retain(|t| t != token);
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = Connection::open(DATABASE_FILE) {
+                for token in tokens_to_delete {
+                    let _ = conn.execute("DELETE FROM tokens WHERE key = ?1", params![token]);
+                    let _ = conn.execute("DELETE FROM error_tokens WHERE key = ?1", params![token]);
+                }
+            } else {
+                error!("无法打开 SQLite 数据库以执行删除 token");
+            }
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 删除 tokens 失败: {:?}", e));
     }
 
     /// 更新并写盘 RefreshToken 映射数据

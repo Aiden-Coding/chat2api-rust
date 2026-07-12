@@ -61,3 +61,13 @@ GET {{host}}/tokens/add/your_single_token_here
 
 ### 获取所有 Token 列表
 GET {{host}}/tokens/list
+
+### 批量/单个删除 Token
+POST {{host}}/tokens/delete
+Content-Type: application/json
+
+{
+  "tokens": [
+    "your_token_to_delete_here"
+  ]
+}
