@@ -47,7 +47,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set target images
+        id: set_images
+        run: |
+          IMAGES="ghcr.io/${{ github.repository }}-rust"
+          if [ "${{ secrets.DOCKER_USERNAME }}" != "" ]; then
+            IMAGES="${IMAGES}
+          ${{ secrets.DOCKER_USERNAME }}/chat2api-rust"
+          fi
+          echo "images<<EOF" >> $GITHUB_OUTPUT
+          echo "$IMAGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Log in to Docker Hub
+        if: "${{ secrets.DOCKER_USERNAME != '' }}"
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -64,9 +77,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            Aiden-Coding/chat2api-rust
-            ghcr.io/${{ github.repository }}-rust
+          images: ${{ steps.set_images.outputs.images }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.get_version.outputs.version }}
