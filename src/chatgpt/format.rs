@@ -8,15 +8,15 @@ use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use actix_web::web::Bytes;
+use regex::Regex;
 
 use crate::chatgpt::service::ChatService;
 use crate::api::tokens::{split_tokens_from_content, num_tokens_from_messages, calculate_image_tokens};
 
 const MODERATION_MESSAGE: &str = "I'm sorry, I cannot provide or engage in any content related to pornography, violence, or any unethical material. If you have any other questions or need assistance, please feel free to let me know. I'll do my best to provide support and assistance.";
 
-// 系统的 system_fingerprint 映射
 fn get_system_fingerprint(model: &str) -> Option<String> {
-    let mut fingerprints = HashMap::new();
+    let mut fingerprints: HashMap<&str, Vec<&str>> = HashMap::new();
     fingerprints.insert("gpt-3.5-turbo-0125", vec!["fp_b28b39ffa8"]);
     fingerprints.insert("gpt-3.5-turbo-1106", vec!["fp_592ef5907d"]);
     fingerprints.insert("gpt-4-0125-preview", vec!["fp_f38f4d6482", "fp_2f57f81c11", "fp_a7daf7c51e", "fp_a865e8ede4", "fp_13c70b9f70", "fp_b77cb481ed"]);
@@ -24,7 +24,6 @@ fn get_system_fingerprint(model: &str) -> Option<String> {
     fingerprints.insert("gpt-4-turbo-2024-04-09", vec!["fp_d1bac968b4"]);
     fingerprints.insert("gpt-4o-2024-05-13", vec!["fp_3aa7262c27"]);
     fingerprints.insert("gpt-4o-mini-2024-07-18", vec!["fp_c9aa9c0491"]);
-
     if let Some(list) = fingerprints.get(model) {
         let mut rng = rand::thread_rng();
         list.choose(&mut rng).map(|&s| s.to_string())
@@ -33,7 +32,6 @@ fn get_system_fingerprint(model: &str) -> Option<String> {
     }
 }
 
-// 辅助从 url 提取文本（上传场景）
 fn get_url_from_content(content: &str) -> (Option<String>, String) {
     if content.starts_with("http") {
         if let Some(first_space) = content.find(' ') {
@@ -59,31 +57,16 @@ pub fn format_messages_with_url(content: &str) -> Value {
             break;
         }
     }
-
     if url_list.is_empty() {
         return Value::String(content.to_string());
     }
-
-    let mut content_arr = vec![
-        json!({
-            "type": "text",
-            "text": remainder
-        })
-    ];
-
+    let mut content_arr = vec![json!({ "type": "text", "text": remainder })];
     for url in url_list {
-        content_arr.push(json!({
-            "type": "image_url",
-            "image_url": {
-                "url": url
-            }
-        }));
+        content_arr.push(json!({ "type": "image_url", "image_url": { "url": url } }));
     }
-
     Value::Array(content_arr)
 }
 
-// 将 OpenAI messages 列表转换为 ChatGPT Web 消息协议格式
 pub async fn api_messages_to_chat(
     service: &ChatService,
     api_messages: &Value,
@@ -119,10 +102,6 @@ pub async fn api_messages_to_chat(
                             if let Some(img_url_val) = item.get("image_url") {
                                 if let Some(url) = img_url_val.get("url").and_then(|v| v.as_str()) {
                                     let detail = img_url_val.get("detail").and_then(|v| v.as_str()).unwrap_or("auto");
-                                    
-                                    // 模拟文件上传逻辑，获取文件大小和宽高
-                                    // 在目前重构版本里，若接口需要多模态文件上传，
-                                    // 我们可以请求对应的 URL 并执行上传。
                                     if let Ok((file_content, mime)) = service.get_file_content_from_url(url).await {
                                         if let Ok(Some(file_meta)) = service.upload_file(&file_content, &mime).await {
                                             let file_id = file_meta.file_id;
@@ -130,7 +109,6 @@ pub async fn api_messages_to_chat(
                                             let file_name = file_meta.file_name;
                                             let mime_type = file_meta.mime_type;
                                             let use_case = file_meta.use_case;
-
                                             if mime_type.starts_with("image/") {
                                                 let width = file_meta.width.unwrap_or(512);
                                                 let height = file_meta.height.unwrap_or(512);
@@ -159,7 +137,7 @@ pub async fn api_messages_to_chat(
                                                     "id": file_id,
                                                     "size": file_size,
                                                     "name": file_name,
-                                                    "mime_type": mime_type,
+                                                    "mime_type": mime_type
                                                 }));
                                             }
                                         }
@@ -179,55 +157,40 @@ pub async fn api_messages_to_chat(
                 json!({ "attachments": attachments })
             };
 
-            let chat_msg = json!({
+            chat_messages.push(json!({
                 "id": Uuid::new_v4().to_string(),
                 "author": { "role": role },
                 "content": { "content_type": content_type, "parts": parts },
                 "metadata": metadata
-            });
-            chat_messages.push(chat_msg);
+            }));
         }
     }
 
     let text_tokens = num_tokens_from_messages(api_messages, &service.resp_model);
     let prompt_tokens = text_tokens + file_tokens;
-
     Ok((Value::Array(chat_messages), prompt_tokens))
 }
 
-// 辅助检测响应中的第一行数据包状态
-pub async fn head_process_response<S>(mut stream: S) -> (S, bool)
-where
-    S: Stream<Item = Result<Bytes, rquest::Error>> + Unpin,
-{
-    // 在这里我们可能需要读取流的前几行来进行验证。
-    // 为了简化流式处理在 Service 的逻辑，我们在 Service 发送完请求后，
-    // 读取第一行 data 并判断是否有 status == "in_progress" 或包含错误信息。
-    // 在 Rust 里一般建议直接在 stream 处理里进行。
-    (stream, true)
-}
-
-// 流式 SSE 的包装转换器
+// 流式 SSE 包装转换器
 pub struct OpenAIStream {
-    service: Arc<ChatService>,
-    raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
-    chat_id: String,
-    created_time: i64,
-    model: String,
-    system_fingerprint: Option<String>,
-    
-    // 转换状态累加器
-    completion_tokens: usize,
-    max_tokens: usize,
-    len_last_content: usize,
-    len_last_citation: usize,
-    last_message_id: Option<String>,
-    last_role: Option<String>,
-    last_content_type: Option<String>,
-    last_status: Option<String>,
-    model_slug: Option<String>,
-    end: bool,
-    buffer: String,
+    pub service: Arc<ChatService>,
+    pub raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
+    pub chat_id: String,
+    pub created_time: i64,
+    pub model: String,
+    pub system_fingerprint: Option<String>,
+
+    pub completion_tokens: usize,
+    pub max_tokens: usize,
+    pub len_last_content: usize,
+    pub len_last_citation: usize,
+    pub last_message_id: Option<String>,
+    pub last_role: Option<String>,
+    pub last_content_type: Option<String>,
+    pub last_status: Option<String>,
+    pub model_slug: Option<String>,
+    pub end: bool,
+    pub buffer: String,
 }
 
 impl OpenAIStream {
@@ -237,11 +200,12 @@ impl OpenAIStream {
         model: String,
         max_tokens: usize,
     ) -> Self {
-        let mut rng = rand::thread_rng();
-        let chat_id = format!("chatcmpl-{}", Uuid::new_v4().to_string().replace("-", "")[..29].to_string());
+        let chat_id = format!(
+            "chatcmpl-{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..29]
+        );
         let system_fingerprint = get_system_fingerprint(&model);
         let created_time = chrono::Utc::now().timestamp();
-
         Self {
             service,
             raw_stream,
@@ -264,7 +228,6 @@ impl OpenAIStream {
     }
 }
 
-// 实现 Stream 特性，使 OpenAIStream 可以被 Actix-web 优雅地进行 SSE 代理
 impl Stream for OpenAIStream {
     type Item = Result<Bytes, std::io::Error>;
 
@@ -273,7 +236,7 @@ impl Stream for OpenAIStream {
             return Poll::Ready(None);
         }
 
-        // 第一帧：发送 role 和初始 content
+        // 第一帧：发送 role 初始 chunk
         if self.completion_tokens == 0 {
             self.completion_tokens += 1;
             let mut first_delta = json!({
@@ -291,251 +254,410 @@ impl Stream for OpenAIStream {
             if let Some(ref fp) = self.system_fingerprint {
                 first_delta.as_object_mut().unwrap().insert("system_fingerprint".to_string(), json!(fp));
             }
-            let bytes_payload = Bytes::from(format!("data: {}\n\n", first_delta.to_string()));
-            return Poll::Ready(Some(Ok(bytes_payload)));
+            return Poll::Ready(Some(Ok(Bytes::from(format!("data: {}\n\n", first_delta)))));
         }
 
-        // 不断拉取原始流并转换
-        match Pin::new(&mut self.raw_stream).poll_next(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(None) => {
-                self.end = true;
-                return Poll::Ready(Some(Ok(Bytes::from("data: [DONE]\n\n"))));
-            }
-            Poll::Ready(Some(Err(e))) => {
-                error!("Error reading from raw_stream: {:?}", e);
-                self.end = true;
-                return Poll::Ready(Some(Err(std::io::Error::new(std::io::ErrorKind::Other, e))));
-            }
-            Poll::Ready(Some(Ok(bytes))) => {
-                let chunk_str = String::from_utf8_lossy(&bytes).to_string();
-                self.buffer.push_str(&chunk_str);
-                let mut output_bytes = Vec::new();
+        loop {
+            match Pin::new(&mut self.raw_stream).poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.end = true;
+                    return Poll::Ready(Some(Ok(Bytes::from("data: [DONE]\n\n"))));
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    error!("Error reading from raw_stream: {:?}", e);
+                    self.end = true;
+                    return Poll::Ready(Some(Err(std::io::Error::new(std::io::ErrorKind::Other, e))));
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    let chunk_str = String::from_utf8_lossy(&bytes).to_string();
+                    self.buffer.push_str(&chunk_str);
+                    let mut output_bytes: Vec<u8> = Vec::new();
 
-                while let Some(pos) = self.buffer.find('\n') {
-                    let line = self.buffer[..pos].to_string();
-                    self.buffer = self.buffer[pos + 1..].to_string();
-                    
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if line.starts_with("data: [DONE]") {
-                        self.end = true;
-                        output_bytes.extend_from_slice(b"data: [DONE]\n\n");
-                        break;
-                    }
-                    if !line.starts_with("data: {") {
-                        continue;
-                    }
-                    info!("OpenAI chunk line: {}", line);
-                    let json_str = &line[6..];
-                    let old_data: Value = match serde_json::from_str(json_str) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
+                    // 处理所有完整行
+                    while let Some(pos) = self.buffer.find('\n') {
+                        let line = self.buffer[..pos].trim().to_string();
+                        self.buffer = self.buffer[pos + 1..].to_string();
 
-                    let message = old_data.get("message").cloned().unwrap_or(Value::Null);
-                    let author = message.get("author").cloned().unwrap_or(Value::Null);
-                    let role = author.get("role").and_then(|v| v.as_str()).unwrap_or("");
-                    if role == "user" || role == "system" {
-                        continue;
-                    }
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if line.starts_with("data: [DONE]") {
+                            info!("Response Model: {:?}", self.model_slug);
+                            self.end = true;
+                            output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                            break;
+                        }
+                        if !line.starts_with("data: {") {
+                            continue;
+                        }
 
-                    let status = message.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                    let message_id = message.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let content = message.get("content").cloned().unwrap_or(Value::Null);
-                    let metadata = message.get("metadata").cloned().unwrap_or(Value::Null);
-                    let initial_text = metadata.get("initial_text").and_then(|v| v.as_str()).unwrap_or("");
-                    let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-                    
-                    if let Some(slug) = metadata.get("model_slug").and_then(|v| v.as_str()) {
-                        self.model_slug = Some(slug.to_string());
-                    }
+                        info!("OpenAI chunk line: {}", line);
+                        let json_str = &line[6..];
+                        let old_data: Value = match serde_json::from_str(json_str) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
 
-                    let mut finish_reason = Value::Null;
-                    let mut delta = json!({});
+                        // 检查是否有错误
+                        if let Some(err_val) = old_data.get("error") {
+                            if !err_val.is_null() {
+                                error!("Error from stream: {:?}", err_val);
+                                output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                                self.end = true;
+                                break;
+                            }
+                        }
 
-                    if message.is_null() && old_data.get("type").and_then(|v| v.as_str()) == Some("moderation") {
-                        delta = json!({ "role": "assistant", "content": MODERATION_MESSAGE });
-                        finish_reason = json!("stop");
-                        self.end = true;
-                    } else if status == "in_progress" {
-                        let outer_content_type = content.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
-                        let mut new_text = String::new();
+                        let message = old_data.get("message").cloned().unwrap_or(Value::Null);
+                        let conversation_id = old_data.get("conversation_id").cloned().unwrap_or(Value::Null);
 
-                        if outer_content_type == "text" {
-                            let part = content.get("parts").and_then(|v| v.as_array())
-                                .and_then(|a| a.first())
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                        let role = message
+                            .get("author")
+                            .and_then(|v| v.get("role"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if role == "user" || role == "system" {
+                            continue;
+                        }
 
-                            if part.is_empty() {
-                                if role == "assistant" && self.last_role.as_deref() != Some("assistant") {
-                                    if self.last_role.is_none() {
-                                        new_text = "".to_string();
-                                    } else {
-                                        new_text = "\n".to_string();
+                        let status = message.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        let message_id = message.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let content = message.get("content").cloned().unwrap_or(Value::Null);
+                        let metadata = message.get("metadata").cloned().unwrap_or(Value::Null);
+                        let initial_text = metadata.get("initial_text").and_then(|v| v.as_str()).unwrap_or("");
+                        let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+
+                        if let Some(slug) = metadata.get("model_slug").and_then(|v| v.as_str()) {
+                            self.model_slug = Some(slug.to_string());
+                        }
+
+                        // 处理 moderation 事件
+                        if message.is_null() && old_data.get("type").and_then(|v| v.as_str()) == Some("moderation") {
+                            let delta = json!({ "role": "assistant", "content": MODERATION_MESSAGE });
+                            let chunk = build_chunk(&self.chat_id, self.created_time, &self.model, &self.system_fingerprint, delta, json!("stop"), &message_id, &conversation_id, self.service.history_disabled);
+                            output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
+                            self.completion_tokens += 1;
+                            self.end = true;
+                            break;
+                        }
+
+                        let finish_reason: Value;
+                        let delta: Value;
+
+                        // ── in_progress ──────────────────────────────────────────
+                        if status == "in_progress" {
+                            let outer_content_type = content.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                            let mut new_text = String::new();
+
+                            if outer_content_type == "text" {
+                                let part = content
+                                    .get("parts")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+
+                                if part.is_empty() {
+                                    if role == "assistant" && self.last_role.as_deref() != Some("assistant") {
+                                        new_text = if self.last_role.is_none() { String::new() } else { "\n".to_string() };
+                                    } else if role == "tool" && self.last_role.as_deref() != Some("tool") {
+                                        new_text = format!(">{}\n", initial_text);
                                     }
-                                } else if role == "tool" && self.last_role.as_deref() != Some("tool") {
-                                    new_text = format!(">{}\n", initial_text);
+                                } else {
+                                    if self.last_message_id.is_some() && self.last_message_id != message_id {
+                                        continue;
+                                    }
+                                    let citations = metadata.get("citations").and_then(|v| v.as_array());
+                                    let citations_len = citations.map(|a| a.len()).unwrap_or(0);
+
+                                    if citations_len > self.len_last_citation {
+                                        if let Some(cite) = citations.unwrap().get(self.len_last_citation) {
+                                            let cite_meta = cite.get("metadata").cloned().unwrap_or(Value::Null);
+                                            let title = cite_meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                            let url = cite_meta.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                                            new_text = format!(" **[[\"\"]]({} \"{}\")** ", url, title);
+                                        }
+                                        self.len_last_citation = citations_len;
+                                    } else {
+                                        let slice_start = self.len_last_content.min(part.len());
+                                        let incoming = &part[slice_start..];
+                                        if role == "assistant" && self.last_role.as_deref() != Some("assistant") {
+                                            if recipient == "dalle.text2im" {
+                                                new_text = format!("\n```{}\n{}", recipient, incoming);
+                                            } else if recipient == "t2uay3k.sj1i4kz" {
+                                                new_text = format!("\n```image_creator\n{}", incoming);
+                                            } else if self.last_role.is_none() {
+                                                new_text = incoming.to_string();
+                                            } else {
+                                                new_text = format!("\n\n{}", incoming);
+                                            }
+                                        } else if role == "tool" && self.last_role.as_deref() != Some("tool") {
+                                            new_text = format!(">{}\n{}", initial_text, incoming);
+                                        } else if role == "tool" {
+                                            new_text = incoming.replace("\n\n", "\n");
+                                        } else {
+                                            new_text = incoming.to_string();
+                                        }
+                                    }
+                                    self.len_last_content = part.len();
+                                }
+                            } else if outer_content_type == "multimodal_text" {
+                                // ── in_progress multimodal_text（与 Python 对齐）──
+                                let parts = content.get("parts").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                                for part in &parts {
+                                    if let Some(asset_ptr) = part.get("asset_pointer").and_then(|v| v.as_str()) {
+                                        let file_id = asset_ptr.replace("sediment://", "");
+                                        let full_height = part.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let current_height = part
+                                            .get("metadata")
+                                            .and_then(|m| m.get("generation"))
+                                            .and_then(|g| g.get("height"))
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        if full_height > current_height {
+                                            let rate = current_height as f64 / full_height as f64;
+                                            new_text = format!("\n> {:.0}%\n", rate * 100.0);
+                                            if self.last_role.as_deref() != Some(role) {
+                                                new_text = format!("\n```{}", new_text);
+                                            }
+                                        } else {
+                                            // 图像完成，获取下载链接
+                                            let conv_id_str = conversation_id.as_str().unwrap_or("");
+                                            let service = self.service.clone();
+                                            let file_id_clone = file_id.clone();
+                                            let conv_id_clone = conv_id_str.to_string();
+                                            // 在同步 poll 里用 block_in_place 执行异步
+                                            let image_url = tokio::task::block_in_place(|| {
+                                                tokio::runtime::Handle::current().block_on(async {
+                                                    service.get_attachment_url(&file_id_clone, &conv_id_clone).await
+                                                })
+                                            });
+                                            if let Some(url) = image_url {
+                                                new_text = format!("\n```\n![image]({})\n", url);
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
-                                if self.last_message_id.is_some() && self.last_message_id != message_id {
+                                let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                let slice_start = self.len_last_content.min(text.len());
+                                let incoming = &text[slice_start..];
+                                if outer_content_type == "code" && self.last_content_type.as_deref() != Some("code") {
+                                    let mut lang = content.get("language").and_then(|v| v.as_str()).unwrap_or("");
+                                    if lang.is_empty() || lang == "unknown" { lang = recipient; }
+                                    new_text = format!("\n```{}\n{}", lang, incoming);
+                                } else if outer_content_type == "execution_output" && self.last_content_type.as_deref() != Some("execution_output") {
+                                    new_text = format!("\n```Output\n{}", incoming);
+                                } else {
+                                    new_text = incoming.to_string();
+                                }
+                                self.len_last_content = text.len();
+                            }
+
+                            // 闭合 code/execution_output/multimodal_text 块
+                            if self.last_content_type.as_deref() == Some("code") && outer_content_type != "code" {
+                                new_text = format!("\n```\n{}", new_text);
+                            } else if self.last_content_type.as_deref() == Some("execution_output") && outer_content_type != "execution_output" {
+                                new_text = format!("\n```\n{}", new_text);
+                            } else if self.last_content_type.as_deref() == Some("multimodal_text") && outer_content_type != "multimodal_text" {
+                                new_text = format!("\n```\n{}", new_text);
+                            }
+
+                            self.last_content_type = Some(outer_content_type.to_string());
+
+                            if self.completion_tokens >= self.max_tokens {
+                                finish_reason = json!("length");
+                                delta = json!({});
+                                self.end = true;
+                            } else {
+                                finish_reason = Value::Null;
+                                delta = json!({ "content": new_text });
+                            }
+                        }
+                        // ── finished_successfully ─────────────────────────────────
+                        else if status == "finished_successfully" {
+                            let outer_content_type = content.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                            if outer_content_type == "multimodal_text" {
+                                // 处理多模态完成（图片下载，对齐 Python）
+                                let parts = content.get("parts").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                                let mut result_delta = json!({});
+                                for part in &parts {
+                                    if part.is_string() { continue; }
+                                    let inner_ct = part.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                                    if inner_ct == "image_asset_pointer" {
+                                        self.last_content_type = Some("image_asset_pointer".to_string());
+                                        let asset_ptr = part.get("asset_pointer").and_then(|v| v.as_str()).unwrap_or("");
+                                        if asset_ptr.starts_with("file-service://") {
+                                            let fid = asset_ptr.replace("file-service://", "");
+                                            debug!("file_id: {}", fid);
+                                            let service = self.service.clone();
+                                            let fid_clone = fid.clone();
+                                            let image_url = tokio::task::block_in_place(|| {
+                                                tokio::runtime::Handle::current().block_on(async {
+                                                    service.get_download_url(&fid_clone).await
+                                                })
+                                            });
+                                            debug!("image_download_url: {:?}", image_url);
+                                            if let Some(url) = image_url {
+                                                result_delta = json!({ "content": format!("\n```\n![image]({})\n", url) });
+                                            } else {
+                                                result_delta = json!({ "content": "\n```\nFailed to load the image.\n" });
+                                            }
+                                        } else {
+                                            let fid = asset_ptr.replace("sediment://", "");
+                                            let conv_id_str = conversation_id.as_str().unwrap_or("");
+                                            let service = self.service.clone();
+                                            let fid_clone = fid.clone();
+                                            let conv_id_clone = conv_id_str.to_string();
+                                            let image_url = tokio::task::block_in_place(|| {
+                                                tokio::runtime::Handle::current().block_on(async {
+                                                    service.get_attachment_url(&fid_clone, &conv_id_clone).await
+                                                })
+                                            });
+                                            if let Some(url) = image_url {
+                                                result_delta = json!({ "content": format!("\n![image]({})\n", url) });
+                                            }
+                                        }
+                                    }
+                                }
+                                delta = result_delta;
+                                finish_reason = Value::Null;
+                                // multimodal finished_successfully 不一定是 end_turn，不在这里结束
+                            } else if message.get("end_turn").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                // 普通文本 end_turn
+                                let part_str = content
+                                    .get("parts")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let new_text = &part_str[self.len_last_content.min(part_str.len())..];
+                                if !new_text.is_empty() {
+                                    delta = json!({ "content": new_text });
+                                } else {
+                                    // 检查 sandbox 文件链接（对齐 Python regex 逻辑）
+                                    let sandbox_re = Regex::new(r"\(sandbox:(.*?)\)").unwrap();
+                                    let matches: Vec<&str> = sandbox_re
+                                        .captures_iter(part_str)
+                                        .filter_map(|c| c.get(1).map(|m| m.as_str()))
+                                        .collect();
+                                    if !matches.is_empty() {
+                                        let service = self.service.clone();
+                                        let conv_id_str = conversation_id.as_str().unwrap_or("").to_string();
+                                        let msg_id_str = message_id.clone().unwrap_or_default();
+                                        let sandbox_paths: Vec<String> = matches.iter().map(|s| s.to_string()).collect();
+                                        let file_url_content = tokio::task::block_in_place(|| {
+                                            tokio::runtime::Handle::current().block_on(async {
+                                                let mut content_str = String::new();
+                                                for (i, sp) in sandbox_paths.iter().enumerate() {
+                                                    if let Some(url) = service.get_response_file_url(&conv_id_str, &msg_id_str, sp).await {
+                                                        content_str.push_str(&format!("\n```\n\n![File {}]({})\n", i + 1, url));
+                                                    }
+                                                }
+                                                content_str
+                                            })
+                                        });
+                                        delta = json!({ "content": file_url_content });
+                                    } else {
+                                        delta = json!({});
+                                    }
+                                }
+                                finish_reason = json!("stop");
+                                self.end = true;
+                            } else {
+                                self.len_last_content = 0;
+                                if let Some(finished_txt) = metadata.get("finished_text").and_then(|v| v.as_str()) {
+                                    delta = json!({ "content": format!("\n{}\n", finished_txt) });
+                                } else {
                                     continue;
                                 }
-                                
-                                let citations = metadata.get("citations").and_then(|v| v.as_array());
-                                let citations_len = citations.map(|a| a.len()).unwrap_or(0);
-
-                                if citations_len > self.len_last_citation {
-                                    if let Some(cite) = citations.unwrap().get(self.len_last_citation) {
-                                        let cite_meta = cite.get("metadata").cloned().unwrap_or(Value::Null);
-                                        let title = cite_meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                                        let url = cite_meta.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                                        new_text = format!(" **[[\"\"]]({} \"{}\")** ", url, title);
-                                    }
-                                    self.len_last_citation = citations_len;
-                                } else {
-                                    let slice_start = self.len_last_content.min(part.len());
-                                    let incoming_text = &part[slice_start..];
-
-                                    if role == "assistant" && self.last_role.as_deref() != Some("assistant") {
-                                        if recipient == "dalle.text2im" {
-                                            new_text = format!("\n```{}\n{}", recipient, incoming_text);
-                                        } else if recipient == "t2uay3k.sj1i4kz" {
-                                            new_text = format!("\n```image_creator\n{}", incoming_text);
-                                        } else if self.last_role.is_none() {
-                                            new_text = incoming_text.to_string();
-                                        } else {
-                                            new_text = format!("\n\n{}", incoming_text);
-                                        }
-                                    } else if role == "tool" && self.last_role.as_deref() != Some("tool") {
-                                        new_text = format!(">{}\n{}", initial_text, incoming_text);
-                                    } else if role == "tool" {
-                                        new_text = incoming_text.replace("\n\n", "\n");
-                                    } else {
-                                        new_text = incoming_text.to_string();
-                                    }
-                                }
-                                self.len_last_content = part.len();
+                                finish_reason = Value::Null;
                             }
-                        } else if outer_content_type == "multimodal_text" {
-                            // 处理图片上传中的多模态接收
-                            // 这里可以通过 service 获取图片下载 URL 并输出为 Markdown
                         } else {
-                            let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            let slice_start = self.len_last_content.min(text.len());
-                            let incoming_text = &text[slice_start..];
+                            continue;
+                        }
 
-                            if outer_content_type == "code" && self.last_content_type.as_deref() != Some("code") {
-                                let mut lang = content.get("language").and_then(|v| v.as_str()).unwrap_or("");
-                                if lang.is_empty() || lang == "unknown" {
-                                    lang = recipient;
-                                }
-                                new_text = format!("\n```{}\n{}", lang, incoming_text);
-                            } else if outer_content_type == "execution_output" && self.last_content_type.as_deref() != Some("execution_output") {
-                                new_text = format!("\n```Output\n{}", incoming_text);
+                        self.last_message_id = message_id.clone();
+                        self.last_role = Some(role.to_string());
+                        self.last_status = Some(status.to_string());
+
+                        // 与 Python 对齐：没有 content 字段时输出空 delta
+                        let effective_delta = if !self.end {
+                            let has_no_content = delta.get("content").is_none();
+                            let is_empty_content = delta.get("content")
+                                .and_then(|v| v.as_str())
+                                .map_or(false, |s| s.is_empty());
+                            if has_no_content || is_empty_content {
+                                json!({ "role": "assistant", "content": "" })
                             } else {
-                                new_text = incoming_text.to_string();
+                                delta
                             }
-                            self.len_last_content = text.len();
-                        }
-
-                        if self.last_content_type.as_deref() == Some("code") && outer_content_type != "code" {
-                            new_text = format!("\n```\n{}", new_text);
-                        } else if self.last_content_type.as_deref() == Some("execution_output") && outer_content_type != "execution_output" {
-                            new_text = format!("\n```\n{}", new_text);
-                        }
-
-                        delta = json!({ "content": new_text });
-                        self.last_content_type = Some(outer_content_type.to_string());
-
-                        if self.completion_tokens >= self.max_tokens {
-                            delta = json!({});
-                            finish_reason = json!("length");
-                            self.end = true;
-                        }
-                    } else if status == "finished_successfully" {
-                        if message.get("end_turn").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            if let Some(parts_arr) = content.get("parts").and_then(|v| v.as_array()) {
-                                if let Some(part_str) = parts_arr.first().and_then(|v| v.as_str()) {
-                                    let slice_start = self.len_last_content.min(part_str.len());
-                                    let new_text = &part_str[slice_start..];
-                                    if !new_text.is_empty() {
-                                        delta = json!({ "content": new_text });
-                                    }
-                                }
-                            }
-                            finish_reason = json!("stop");
-                            self.end = true;
                         } else {
-                            self.len_last_content = 0;
-                            if let Some(finished_txt) = metadata.get("finished_text").and_then(|v| v.as_str()) {
-                                delta = json!({ "content": format!("\n{}\n", finished_txt) });
-                            } else {
-                                continue;
-                            }
-                        }
-                    } else {
-                        continue;
+                            delta
+                        };
+
+                        let chunk = build_chunk(
+                            &self.chat_id,
+                            self.created_time,
+                            &self.model,
+                            &self.system_fingerprint,
+                            effective_delta,
+                            finish_reason,
+                            &message_id,
+                            &conversation_id,
+                            self.service.history_disabled,
+                        );
+                        self.completion_tokens += 1;
+                        output_bytes.extend_from_slice(format!("data: {}\n\n", chunk).as_bytes());
                     }
 
-                    self.last_message_id = message_id.clone();
-                    self.last_role = Some(role.to_string());
-                    self.last_status = Some(status.to_string());
-
-                    if !self.end {
-                        let content_val = delta.get("content");
-                        let has_no_content_field = content_val.is_none();
-                        let is_empty_content = content_val
-                            .and_then(|v| v.as_str())
-                            .map_or(false, |s| s.is_empty());
-                        
-                        if has_no_content_field || is_empty_content {
-                            delta = json!({ "role": "assistant", "content": "" });
-                        }
+                    if !output_bytes.is_empty() {
+                        return Poll::Ready(Some(Ok(Bytes::from(output_bytes))));
                     }
-
-                    let mut chunk_new_data = json!({
-                        "id": self.chat_id,
-                        "object": "chat.completion.chunk",
-                        "created": self.created_time,
-                        "model": self.model,
-                        "choices": [{
-                            "index": 0,
-                            "delta": delta,
-                            "logprobs": null,
-                            "finish_reason": finish_reason
-                        }]
-                    });
-
-                    if let Some(ref fp) = self.system_fingerprint {
-                        chunk_new_data.as_object_mut().unwrap().insert("system_fingerprint".to_string(), json!(fp));
-                    }
-                    if !self.service.history_disabled {
-                        if let Some(ref mid) = message_id {
-                            chunk_new_data.as_object_mut().unwrap().insert("message_id".to_string(), json!(mid));
-                        }
-                        let conv_id = old_data.get("conversation_id").cloned().unwrap_or(Value::Null);
-                        chunk_new_data.as_object_mut().unwrap().insert("conversation_id".to_string(), conv_id);
-                    }
-
-                    self.completion_tokens += 1;
-                    output_bytes.extend_from_slice(format!("data: {}\n\n", chunk_new_data.to_string()).as_bytes());
-                }
-
-                if !output_bytes.is_empty() {
-                    return Poll::Ready(Some(Ok(Bytes::from(output_bytes))));
                 }
             }
         }
-
-        Poll::Pending
     }
 }
 
-// 处理非流式响应转换：合并流中所有的文本
+/// 构建一个 SSE chunk JSON（抽出为辅助函数，减少重复）
+fn build_chunk(
+    chat_id: &str,
+    created_time: i64,
+    model: &str,
+    system_fingerprint: &Option<String>,
+    delta: Value,
+    finish_reason: Value,
+    message_id: &Option<String>,
+    conversation_id: &Value,
+    history_disabled: bool,
+) -> Value {
+    let mut chunk = json!({
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created_time,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": delta,
+            "logprobs": null,
+            "finish_reason": finish_reason
+        }]
+    });
+    if let Some(fp) = system_fingerprint {
+        chunk.as_object_mut().unwrap().insert("system_fingerprint".to_string(), json!(fp));
+    }
+    if !history_disabled {
+        if let Some(mid) = message_id {
+            chunk.as_object_mut().unwrap().insert("message_id".to_string(), json!(mid));
+        }
+        chunk.as_object_mut().unwrap().insert("conversation_id".to_string(), conversation_id.clone());
+    }
+    chunk
+}
+
+/// 非流式响应转换（与 Python format_not_stream_response 对齐）
 pub async fn format_not_stream_response(
     mut stream: OpenAIStream,
     prompt_tokens: usize,
@@ -558,11 +680,23 @@ pub async fn format_not_stream_response(
             if !line.starts_with("data: {") {
                 continue;
             }
-            let data_json: Value = serde_json::from_str(&line[6..]).unwrap_or(Value::Null);
+            // 与 Python 对齐：用 try/except 包裹，出错直接 continue
+            let data_json: Value = match serde_json::from_str(&line[6..]) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
             if let Some(choices) = data_json.get("choices").and_then(|v| v.as_array()) {
                 if let Some(first_choice) = choices.first() {
-                    if let Some(content) = first_choice.get("delta").and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
-                        all_text.push_str(content);
+                    // 与 Python 对齐：检查 delta 是否存在
+                    let delta = match first_choice.get("delta") {
+                        Some(d) if !d.is_null() => d,
+                        _ => continue,  // Skip if delta is missing or null
+                    };
+                    // 与 Python 对齐：delta 里没有 content key 时 skip（不崩溃）
+                    if let Some(content_val) = delta.get("content") {
+                        if let Some(content_str) = content_val.as_str() {
+                            all_text.push_str(content_str);
+                        }
                     }
                 }
             }
@@ -570,7 +704,7 @@ pub async fn format_not_stream_response(
     }
 
     let (content, completion_tokens, finish_reason) = split_tokens_from_content(&all_text, max_tokens, &model);
-    
+
     if content.is_empty() {
         return Err(actix_web::error::ErrorForbidden("No content in the message."));
     }
@@ -580,17 +714,15 @@ pub async fn format_not_stream_response(
         "object": "chat.completion",
         "created": created_time,
         "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": content
-                },
-                "logprobs": null,
-                "finish_reason": finish_reason
-            }
-        ],
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": content
+            },
+            "logprobs": null,
+            "finish_reason": finish_reason
+        }],
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

@@ -1,5 +1,4 @@
 use rquest::{Client as ReqwestClient, Proxy, tls::Impersonate};
-use std::time::Duration;
 
 pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<ReqwestClient, rquest::Error> {
     let impersonate = match impersonate_name.to_lowercase().as_str() {

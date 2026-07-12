@@ -43,7 +43,7 @@ pub fn num_tokens_from_messages(messages: &Value, model: &str) -> usize {
         for message in arr {
             num_tokens += tokens_per_message;
             if let Some(obj) = message.as_object() {
-                for (key, val) in obj {
+                for (_key, val) in obj {
                     if val.is_array() {
                         if let Some(val_arr) = val.as_array() {
                             for item in val_arr {

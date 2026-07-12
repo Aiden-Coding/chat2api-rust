@@ -1,5 +1,5 @@
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tera::{Context, Tera};

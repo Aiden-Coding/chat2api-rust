@@ -1,5 +1,4 @@
 use actix_web::{middleware, web, App, HttpServer};
-use std::sync::Arc;
 use tera::Tera;
 use log::info;
 
@@ -78,6 +77,19 @@ async fn main() -> std::io::Result<()> {
                     .allow_any_method()
                     .allow_any_header()
                     .max_age(3600)
+            )
+            .app_data(
+                web::JsonConfig::default()
+                    .error_handler(|err, _req| {
+                        let msg = format!("{}", err);
+                        actix_web::error::InternalError::from_response(
+                            err,
+                            actix_web::HttpResponse::BadRequest().json(serde_json::json!({
+                                "error": { "message": msg, "type": "invalid_request_error" }
+                            })),
+                        )
+                        .into()
+                    })
             )
             .app_data(state_data.clone())
             .app_data(config_data.clone())

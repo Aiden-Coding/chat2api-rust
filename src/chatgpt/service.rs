@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use serde_json::{json, Value};
 use uuid::Uuid;
-use log::{info, error, debug};
+use log::{info, error};
 use actix_web::error::{ErrorInternalServerError, ErrorForbidden, ErrorNotFound, ErrorBadRequest};
-use rquest::header::{HeaderMap, HeaderName, HeaderValue};
+use rquest::header::{HeaderMap, HeaderValue};
 use md5;
 
 use crate::config::Config;
@@ -32,16 +32,16 @@ pub struct ChatService {
     pub req_token: String,
     pub access_token: Option<String>,
     pub account_id: Option<String>,
-    
+
     pub client: rquest::Client,
     pub sentinel_client: rquest::Client,
-    
+
     pub host_url: String,
     pub base_url: String,
     pub base_headers: HeaderMap,
     pub user_agent: String,
     pub impersonate: String,
-    
+
     pub origin_model: String,
     pub resp_model: String,
     pub req_model: String,
@@ -51,9 +51,14 @@ pub struct ChatService {
     pub proof_token: Option<String>,
     pub ark0se_token: Option<String>,
     pub turnstile_token: Option<String>,
-    
+
     pub history_disabled: bool,
     pub check_model: bool,
+
+    // 从请求体传入
+    pub conversation_id: Option<String>,
+    pub parent_message_id: Option<String>,
+    pub max_tokens: usize,
 }
 
 use std::sync::Mutex;
@@ -63,6 +68,63 @@ static CACHED_DPL: Mutex<Option<String>> = Mutex::new(None);
 static CACHED_SCRIPT: Mutex<Option<String>> = Mutex::new(None);
 static CACHED_TIME: Mutex<i64> = Mutex::new(0);
 
+/// 根据 mime_type 确定文件扩展名
+fn get_file_extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" | "image/jpg" => ".jpg",
+        "image/png" => ".png",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "application/pdf" => ".pdf",
+        "text/plain" => ".txt",
+        "text/csv" => ".csv",
+        "application/json" => ".json",
+        "application/msword" => ".doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
+        _ => ".bin",
+    }
+}
+
+/// 根据 mime_type 确定 use_case
+fn determine_file_use_case(mime_type: &str) -> &'static str {
+    if mime_type.starts_with("image/") {
+        "multimodal"
+    } else {
+        "ace_upload"
+    }
+}
+
+/// 从图片字节中粗略读取宽高（仅支持 JPEG/PNG）
+fn get_image_size(data: &[u8]) -> Option<(u32, u32)> {
+    // PNG: signature 8 bytes, then IHDR chunk: 4(len) + 4(type) + 4(w) + 4(h)
+    if data.len() >= 24 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
+        let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return Some((w, h));
+    }
+    // JPEG: scan for SOF markers
+    if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
+        let mut i = 2usize;
+        while i + 8 < data.len() {
+            if data[i] != 0xFF {
+                break;
+            }
+            let marker = data[i + 1];
+            let seg_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            // SOF markers: 0xC0-0xC3, 0xC5-0xC7, 0xC9-0xCB, 0xCD-0xCF
+            if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 {
+                if i + 8 < data.len() {
+                    let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                    let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                    return Some((w, h));
+                }
+            }
+            i += 2 + seg_len;
+        }
+    }
+    None
+}
+
 impl ChatService {
     pub async fn new(
         state: AppState,
@@ -70,8 +132,14 @@ impl ChatService {
         origin_token: Option<String>,
         data: &Value,
     ) -> Result<Self, actix_web::Error> {
-        let req_token = get_req_token(&state, &config, origin_token.as_deref().unwrap_or(""), data.get("seed").and_then(|v| v.as_str())).await?;
-        
+        let req_token = get_req_token(
+            &state,
+            &config,
+            origin_token.as_deref().unwrap_or(""),
+            data.get("seed").and_then(|v| v.as_str()),
+        )
+        .await?;
+
         let mut access_token = None;
         let mut account_id = None;
 
@@ -85,13 +153,17 @@ impl ChatService {
             }
         }
 
-        // 使用默认或从 globals 取 fp (本例简写随机指纹)
+        // 从请求体获取 account_id override
+        if let Some(acc_id_override) = data.get("Chatgpt-Account-Id").and_then(|v| v.as_str()) {
+            account_id = Some(acc_id_override.to_string());
+        }
+
         let mut impersonate = "safari15_3".to_string();
         let mut user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15".to_string();
         let mut oai_device_id = Uuid::new_v4().to_string();
-        let mut sec_ch_ua = None;
-        let mut sec_ch_ua_platform = None;
-        let mut sec_ch_ua_mobile = None;
+        let mut sec_ch_ua: Option<String> = None;
+        let mut sec_ch_ua_platform: Option<String> = None;
+        let mut sec_ch_ua_mobile: Option<String> = None;
 
         if !req_token.is_empty() {
             let mut inner = state.inner.write().await;
@@ -146,7 +218,7 @@ impl ChatService {
 
         let digest = md5::compute(req_token.as_bytes());
         let session_id = format!("{:x}", digest);
-        
+
         let main_proxy = if !config.proxy_url_list.is_empty() {
             let mut rng = rand::thread_rng();
             Some(config.proxy_url_list.choose(&mut rng).unwrap().replace("{}", &session_id))
@@ -198,7 +270,10 @@ impl ChatService {
         }
 
         let base_url = if access_token.is_some() {
-            base_headers.insert("authorization", HeaderValue::from_str(&format!("Bearer {}", access_token.as_ref().unwrap())).unwrap());
+            base_headers.insert(
+                "authorization",
+                HeaderValue::from_str(&format!("Bearer {}", access_token.as_ref().unwrap())).unwrap(),
+            );
             if let Some(ref acc_id) = account_id {
                 base_headers.insert("chatgpt-account-id", HeaderValue::from_str(acc_id).unwrap());
             }
@@ -211,7 +286,7 @@ impl ChatService {
             base_headers.insert("authkey", HeaderValue::from_str(a_key).unwrap());
         }
 
-        // 处理模型名字解析
+        // 模型解析
         let origin_model = data.get("model").and_then(|v| v.as_str()).unwrap_or("gpt-3.5-turbo").to_string();
         let mut model_map = HashMap::new();
         model_map.insert("gpt-3.5-turbo", "gpt-3.5-turbo-0125");
@@ -222,8 +297,13 @@ impl ChatService {
         model_map.insert("o1-mini", "o1-mini-2024-09-12");
         model_map.insert("o1", "o1-2024-12-18");
         model_map.insert("o3-mini", "o3-mini-2025-01-31");
-        
-        let resp_model = model_map.get(origin_model.as_str()).cloned().unwrap_or(origin_model.as_str()).to_string();
+
+        let resp_model = model_map
+            .get(origin_model.as_str())
+            .cloned()
+            .unwrap_or(origin_model.as_str())
+            .to_string();
+
         let gizmo_id = if origin_model.contains("gizmo") || origin_model.contains("g-") {
             origin_model.split("g-").last().map(|s| format!("g-{}", s))
         } else {
@@ -266,9 +346,21 @@ impl ChatService {
             "auto"
         } else {
             "gpt-4o"
-        }.to_string();
+        }
+        .to_string();
 
-        let history_disabled = data.get("history_disabled").and_then(|v| v.as_bool()).unwrap_or(config.history_disabled);
+        let history_disabled = data
+            .get("history_disabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(config.history_disabled);
+
+        let conversation_id = data.get("conversation_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let parent_message_id = data.get("parent_message_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let max_tokens = data
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(usize::MAX);
 
         let mut service = Self {
             state,
@@ -294,6 +386,9 @@ impl ChatService {
             turnstile_token: None,
             history_disabled,
             check_model: false,
+            conversation_id,
+            parent_message_id,
+            max_tokens,
         };
 
         service.get_dpl().await?;
@@ -311,24 +406,21 @@ impl ChatService {
                 return Ok(());
             }
         }
-        
+
         if self.config.conversation_only {
             return Ok(());
         }
 
-        let resp_res = self.client.get(&self.host_url)
-            .headers(self.base_headers.clone())
-            .send()
-            .await;
+        let resp_res = self.client.get(&self.host_url).headers(self.base_headers.clone()).send().await;
 
         if let Ok(resp) = resp_res {
             if resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                // 正则提取 data-build 或者是 script
                 if let Some(caps) = regex::Regex::new(r#"data-build="([^"]*)""#).unwrap().captures(&body) {
                     let dpl = caps.get(1).map(|m: regex::Match| m.as_str().to_string()).unwrap_or_default();
                     *CACHED_DPL.lock().unwrap() = Some(dpl.clone());
-                    *CACHED_SCRIPT.lock().unwrap() = Some("https://chatgpt.com/backend-api/sentinel/sdk.js".to_string());
+                    *CACHED_SCRIPT.lock().unwrap() =
+                        Some("https://chatgpt.com/backend-api/sentinel/sdk.js".to_string());
                     *CACHED_TIME.lock().unwrap() = now;
                     info!("Found DPL: {:?}", dpl);
                 }
@@ -339,7 +431,8 @@ impl ChatService {
             let mut cached_dpl = CACHED_DPL.lock().unwrap();
             if cached_dpl.is_none() {
                 *cached_dpl = Some("prod-f501fe933b3edf57aea882da888e1a544df99840".to_string());
-                *CACHED_SCRIPT.lock().unwrap() = Some("https://chatgpt.com/backend-api/sentinel/sdk.js".to_string());
+                *CACHED_SCRIPT.lock().unwrap() =
+                    Some("https://chatgpt.com/backend-api/sentinel/sdk.js".to_string());
             }
         }
         Ok(())
@@ -360,11 +453,7 @@ impl ChatService {
 
         let payload = json!({ "p": p_token });
 
-        let resp_res = self.sentinel_client.post(&url)
-            .headers(self.base_headers.clone())
-            .json(&payload)
-            .send()
-            .await;
+        let resp_res = self.sentinel_client.post(&url).headers(self.base_headers.clone()).json(&payload).send().await;
 
         match resp_res {
             Ok(resp) => {
@@ -374,38 +463,78 @@ impl ChatService {
                     let text = resp.text().await.unwrap_or_default();
                     info!("Sentinel response body: {}", text);
                     let json_val: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                    
-                    self.chat_token = json_val.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                    self.chat_token =
+                        json_val.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     if self.chat_token.is_empty() {
-                        return Err(ErrorForbidden(format!("Failed to get chat requirements token, body was: {}", serde_json::to_string(&json_val).unwrap_or_default())));
+                        return Err(ErrorForbidden(format!(
+                            "Failed to get chat requirements token, body was: {}",
+                            serde_json::to_string(&json_val).unwrap_or_default()
+                        )));
                     }
 
                     // 校验模型权限
                     let persona = json_val.get("persona").and_then(|v| v.as_str()).unwrap_or("");
-                    if persona != "chatgpt-paid" && (self.req_model == "gpt-4" || self.req_model == "o1-preview") {
-                        return Err(ErrorNotFound(json!({
-                            "message": format!("The model `{}` does not exist or you do not have access to it.", self.origin_model),
-                            "type": "invalid_request_error",
-                            "code": "model_not_found"
-                        }).to_string()));
+                    if persona != "chatgpt-paid"
+                        && (self.req_model == "gpt-4" || self.req_model == "o1-preview")
+                    {
+                        return Err(ErrorNotFound(
+                            json!({
+                                "message": format!("The model `{}` does not exist or you do not have access to it.", self.origin_model),
+                                "type": "invalid_request_error",
+                                "code": "model_not_found"
+                            })
+                            .to_string(),
+                        ));
                     }
 
-                    // 处理 Turnstile 如果 required
+                    // 处理 Turnstile
                     if let Some(turnstile) = json_val.get("turnstile") {
                         if turnstile.get("required").and_then(|v| v.as_bool()).unwrap_or(false) {
                             if let Some(dx) = turnstile.get("dx").and_then(|v| v.as_str()) {
-                                self.turnstile_token = Some(process_turnstile(dx, &p_token));
+                                // 优先使用远程 turnstile_solver_url（与 Python 对齐）
+                                if let Some(ref solver_url) = self.config.turnstile_solver_url.clone() {
+                                    let payload = json!({
+                                        "url": "https://chatgpt.com",
+                                        "p": p_token,
+                                        "dx": dx,
+                                        "ua": self.user_agent
+                                    });
+                                    match self.client.post(solver_url).json(&payload).send().await {
+                                        Ok(r) => {
+                                            if let Ok(r_json) = r.json::<Value>().await {
+                                                if let Some(t) = r_json.get("t").and_then(|v| v.as_str()) {
+                                                    self.turnstile_token = Some(t.to_string());
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            info!("Turnstile solver ignored: {:?}", e);
+                                        }
+                                    }
+                                } else {
+                                    // fallback: 本地处理
+                                    self.turnstile_token = Some(process_turnstile(dx, &p_token));
+                                }
                             }
                         }
                     }
 
-                    // 处理 Proof of Work 如果 required
+                    // 处理 Proof of Work
                     if let Some(pow) = json_val.get("proofofwork") {
                         if pow.get("required").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            let diff = pow.get("difficulty").and_then(|v| v.as_str()).unwrap_or("000032");
+                            let diff = pow
+                                .get("difficulty")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("000032");
+                            // 与 Python 对齐：如果难度 <= pow_difficulty 则拒绝
+                            if diff <= self.config.pow_difficulty.as_str() {
+                                return Err(ErrorForbidden(format!(
+                                    "Proof of work difficulty too high: {}",
+                                    diff
+                                )));
+                            }
                             let seed = pow.get("seed").and_then(|v| v.as_str()).unwrap_or("");
-                            
-                            // 调用多线程求解器
                             let (ans, solved) = get_answer_token(seed, diff, &config_val);
                             if solved {
                                 self.proof_token = Some(ans);
@@ -417,8 +546,20 @@ impl ChatService {
                     Ok(())
                 } else {
                     let err_text = resp.text().await.unwrap_or_default();
+                    // 与 Python 对齐：cf_chl_opt 和 rate-limit 特殊处理
+                    if err_text.contains("cf_chl_opt") {
+                        return Err(ErrorForbidden("cf_chl_opt"));
+                    }
+                    if status.as_u16() == 429 {
+                        // 429 时将 token 加入错误列表
+                        self.mark_token_error().await;
+                        return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
+                    }
                     error!("Sentinel non-200 status {}, body: {}", status, err_text);
-                    Err(ErrorForbidden(format!("Sentinel returns status {}, detail: {}", status, err_text)))
+                    Err(ErrorForbidden(format!(
+                        "Sentinel returns status {}, detail: {}",
+                        status, err_text
+                    )))
                 }
             }
             Err(e) => {
@@ -428,24 +569,52 @@ impl ChatService {
         }
     }
 
-    // 拼装请求 Body
+    /// 将当前 token 加入错误列表（对齐 Python check_is_limit）
+    async fn mark_token_error(&self) {
+        if self.req_token.is_empty() {
+            return;
+        }
+        let mut inner = self.state.inner.write().await;
+        if !inner.error_token_list.contains(&self.req_token) {
+            inner.error_token_list.push(self.req_token.clone());
+            // 持久化
+            use std::fs;
+            let file = "data/error_token.txt";
+            if let Ok(mut content) = fs::read_to_string(file) {
+                if !content.ends_with('\n') && !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(&self.req_token);
+                content.push('\n');
+                let _ = fs::write(file, content);
+            } else {
+                let _ = fs::write(file, format!("{}\n", self.req_token));
+            }
+        }
+    }
+
+    // 拼装请求 Body（与 Python prepare_send_conversation 对齐，随机 client_contextual_info）
     pub async fn prepare_send_conversation(&self, chat_messages: Value, parent_message_id: Option<&str>) -> Value {
+        let mut rng = rand::thread_rng();
         let conversation_mode = if let Some(ref gid) = self.gizmo_id {
+            info!("Gizmo id: {}", gid);
             json!({ "kind": "gizmo_interaction", "gizmo_id": gid })
         } else {
             json!({ "kind": "primary_assistant" })
         };
 
+        info!("Model mapping: {} -> {}", self.origin_model, self.req_model);
+
         let mut req_body = json!({
             "action": "next",
             "client_contextual_info": {
                 "is_dark_mode": false,
-                "time_since_loaded": 150,
-                "page_height": 900,
-                "page_width": 1400,
+                "time_since_loaded": rng.gen_range(50..500i64),
+                "page_height": rng.gen_range(500..1000i64),
+                "page_width": rng.gen_range(1000..2000i64),
                 "pixel_ratio": 1.5,
-                "screen_height": 1080,
-                "screen_width": 1920
+                "screen_height": rng.gen_range(800..1200i64),
+                "screen_width": rng.gen_range(1200..2200i64)
             },
             "conversation_mode": conversation_mode,
             "conversation_origin": null,
@@ -458,7 +627,10 @@ impl ChatService {
             "model": self.req_model,
             "paragen_cot_summary_display_override": "allow",
             "paragen_stream_type_override": null,
-            "parent_message_id": parent_message_id.unwrap_or(&Uuid::new_v4().to_string()).to_string(),
+            "parent_message_id": parent_message_id
+                .or(self.parent_message_id.as_deref())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
             "reset_rate_limits": false,
             "suggestions": [],
             "supported_encodings": [],
@@ -469,6 +641,11 @@ impl ChatService {
             "websocket_request_id": Uuid::new_v4().to_string()
         });
 
+        // 如果有 conversation_id，加入请求体
+        if let Some(ref conv_id) = self.conversation_id {
+            req_body.as_object_mut().unwrap().insert("conversation_id".to_string(), json!(conv_id));
+        }
+
         req_body
     }
 
@@ -478,25 +655,32 @@ impl ChatService {
         let mut headers = self.base_headers.clone();
         headers.insert("accept", HeaderValue::from_static("text/event-stream"));
         headers.insert("accept-encoding", HeaderValue::from_static("identity"));
-        
+
         if !self.config.conversation_only {
-            headers.insert("openai-sentinel-chat-requirements-token", HeaderValue::from_str(&self.chat_token).unwrap());
+            if let Ok(hv) = HeaderValue::from_str(&self.chat_token) {
+                headers.insert("openai-sentinel-chat-requirements-token", hv);
+            }
             if let Some(ref proof) = self.proof_token {
-                headers.insert("openai-sentinel-proof-token", HeaderValue::from_str(proof).unwrap());
+                if let Ok(hv) = HeaderValue::from_str(proof) {
+                    headers.insert("openai-sentinel-proof-token", hv);
+                }
+            }
+            if let Some(ref ark) = self.ark0se_token {
+                if let Ok(hv) = HeaderValue::from_str(ark) {
+                    headers.insert("openai-sentinel-arkose-token", hv);
+                }
             }
             if let Some(ref turnstile) = self.turnstile_token {
-                headers.insert("openai-sentinel-turnstile-token", HeaderValue::from_str(turnstile).unwrap());
+                if let Ok(hv) = HeaderValue::from_str(turnstile) {
+                    headers.insert("openai-sentinel-turnstile-token", hv);
+                }
             }
         }
 
         info!("Sending conversation request to: {}", url);
         info!("Request body: {}", serde_json::to_string(&req_body).unwrap_or_default());
 
-        let resp_res = self.client.post(&url)
-            .headers(headers)
-            .json(&req_body)
-            .send()
-            .await;
+        let resp_res = self.client.post(&url).headers(headers).json(&req_body).send().await;
 
         match resp_res {
             Ok(resp) => {
@@ -505,37 +689,281 @@ impl ChatService {
                     Ok(resp)
                 } else {
                     let err_text = resp.text().await.unwrap_or_default();
-                    Err(ErrorInternalServerError(format!("OpenAI conversation failed, status {}, detail: {}", status, err_text)))
+                    if err_text.contains("cf_chl_opt") {
+                        return Err(ErrorForbidden("cf_chl_opt"));
+                    }
+                    if status.as_u16() == 429 {
+                        self.mark_token_error().await;
+                        return Err(actix_web::error::ErrorTooManyRequests("rate-limit"));
+                    }
+                    Err(ErrorInternalServerError(format!(
+                        "OpenAI conversation failed, status {}, detail: {}",
+                        status, err_text
+                    )))
                 }
             }
-            Err(e) => Err(ErrorInternalServerError(format!("Request to OpenAI conversation failed: {:?}", e)))
+            Err(e) => Err(ErrorInternalServerError(format!(
+                "Request to OpenAI conversation failed: {:?}",
+                e
+            ))),
         }
     }
 
     // 辅助多模态文件下载
     pub async fn get_file_content_from_url(&self, url: &str) -> Result<(Vec<u8>, String), actix_web::Error> {
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .send()
             .await
             .map_err(|e| ErrorBadRequest(format!("Failed to fetch file URL: {:?}", e)))?;
-        let mime = resp.headers().get("content-type")
+        let mime = resp
+            .headers()
+            .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream")
+            .split(';')
+            .next()
+            .unwrap_or("application/octet-stream")
+            .trim()
             .to_string();
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| ErrorBadRequest(format!("Failed to read file bytes: {:?}", e)))?;
         Ok((bytes.to_vec(), mime))
     }
 
-    // 文件上传占位接口（用于支持完整逆向的多模态能力）
-    pub async fn upload_file(&self, _content: &[u8], _mime_type: &str) -> Result<Option<FileMeta>, actix_web::Error> {
-        // 生产级逻辑通常是先请求 /backend-api/files 分配 file_id，
-        // 然后 PUT 对应预签名 URL，最后请求 /backend-api/files/{file_id}/uploaded
-        // 咱们可以先返回空或者实现简单占位
-        Ok(None)
+    /// 申请上传 URL（对齐 Python get_upload_url）
+    async fn get_upload_url(
+        &self,
+        file_name: &str,
+        file_size: usize,
+        use_case: &str,
+    ) -> Result<(String, String), actix_web::Error> {
+        let url = format!("{}/files", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.base_headers.clone())
+            .json(&json!({
+                "file_name": file_name,
+                "file_size": file_size,
+                "reset_rate_limits": false,
+                "timezone_offset_min": -480,
+                "use_case": use_case
+            }))
+            .send()
+            .await
+            .map_err(|e| ErrorInternalServerError(format!("get_upload_url request failed: {:?}", e)))?;
+
+        if resp.status().is_success() {
+            let res: Value = resp
+                .json()
+                .await
+                .map_err(|e| ErrorInternalServerError(format!("get_upload_url parse failed: {:?}", e)))?;
+            let file_id = res.get("file_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let upload_url = res.get("upload_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            info!("file_id: {}, upload_url: {}", file_id, upload_url);
+            Ok((file_id, upload_url))
+        } else {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            Err(ErrorInternalServerError(format!("get_upload_url failed: {} {}", status, text)))
+        }
     }
 
-    pub async fn check_upload(&self, _file_id: &str) -> bool {
-        true
+    /// PUT 上传文件内容（对齐 Python upload）
+    async fn upload_content(
+        &self,
+        upload_url: &str,
+        file_content: &[u8],
+        mime_type: &str,
+    ) -> Result<bool, actix_web::Error> {
+        let mut headers = self.base_headers.clone();
+        headers.insert("accept", HeaderValue::from_static("application/json, text/plain, */*"));
+        if let Ok(hv) = HeaderValue::from_str(mime_type) {
+            headers.insert("content-type", hv);
+        }
+        headers.insert("x-ms-blob-type", HeaderValue::from_static("BlockBlob"));
+        headers.insert("x-ms-version", HeaderValue::from_static("2020-04-08"));
+        headers.remove("authorization");
+        headers.remove("oai-device-id");
+        headers.remove("oai-language");
+
+        let resp = self
+            .client
+            .put(upload_url)
+            .headers(headers)
+            .body(file_content.to_vec())
+            .send()
+            .await
+            .map_err(|e| ErrorInternalServerError(format!("upload_content failed: {:?}", e)))?;
+
+        Ok(resp.status().as_u16() == 201)
+    }
+
+    /// 确认上传完成，获取 download_url（对齐 Python get_download_url_from_upload）
+    async fn get_download_url_from_upload(&self, file_id: &str) -> Option<String> {
+        let url = format!("{}/files/{}/uploaded", self.base_url, file_id);
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.base_headers.clone())
+            .json(&json!({}))
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_success() {
+            let res: Value = resp.json().await.ok()?;
+            res.get("download_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 完整文件上传流程（对齐 Python upload_file）
+    pub async fn upload_file(
+        &self,
+        file_content: &[u8],
+        mime_type: &str,
+    ) -> Result<Option<FileMeta>, actix_web::Error> {
+        if file_content.is_empty() || mime_type.is_empty() {
+            return Ok(None);
+        }
+
+        let mut actual_mime = mime_type.to_string();
+        let mut width: Option<u32> = None;
+        let mut height: Option<u32> = None;
+
+        if mime_type.starts_with("image/") {
+            match get_image_size(file_content) {
+                Some((w, h)) => {
+                    width = Some(w);
+                    height = Some(h);
+                }
+                None => {
+                    // 无法解析尺寸，降级为 text/plain（与 Python 对齐）
+                    actual_mime = "text/plain".to_string();
+                }
+            }
+        }
+
+        let file_size = file_content.len();
+        let file_extension = get_file_extension(&actual_mime);
+        let file_name = format!("{}{}", Uuid::new_v4(), file_extension);
+        let use_case = determine_file_use_case(&actual_mime);
+
+        let (file_id, upload_url) = match self.get_upload_url(&file_name, file_size, use_case).await {
+            Ok((id, url)) if !id.is_empty() && !url.is_empty() => (id, url),
+            _ => return Ok(None),
+        };
+
+        if !self.upload_content(&upload_url, file_content, &actual_mime).await.unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let _download_url = self.get_download_url_from_upload(&file_id).await;
+        // download_url 仅用于验证，实际引用 file_id
+
+        let meta = FileMeta {
+            file_id,
+            size_bytes: file_size,
+            file_name,
+            mime_type: actual_mime,
+            use_case: use_case.to_string(),
+            width,
+            height,
+        };
+        info!("File_meta: file_id={}, size={}, use_case={}", meta.file_id, meta.size_bytes, meta.use_case);
+        Ok(Some(meta))
+    }
+
+    /// 轮询确认文档索引完成（对齐 Python check_upload）
+    pub async fn check_upload(&self, file_id: &str) -> bool {
+        let url = format!("{}/files/{}", self.base_url, file_id);
+        for _ in 0..30 {
+            if let Ok(resp) = self.client.get(&url).headers(self.base_headers.clone()).send().await {
+                if resp.status().is_success() {
+                    if let Ok(res) = resp.json::<Value>().await {
+                        if res
+                            .get("retrieval_index_status")
+                            .and_then(|v| v.as_str())
+                            == Some("success")
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        false
+    }
+
+    /// 获取已生成文件的下载 URL（对齐 Python get_download_url）
+    pub async fn get_download_url(&self, file_id: &str) -> Option<String> {
+        let url = format!("{}/files/{}/download", self.base_url, file_id);
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.base_headers.clone())
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_success() {
+            let res: Value = resp.json().await.ok()?;
+            res.get("download_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            error!("get_download_url failed: {}", resp.status());
+            None
+        }
+    }
+
+    /// 获取附件下载 URL（对齐 Python get_attachment_url）
+    pub async fn get_attachment_url(&self, file_id: &str, conversation_id: &str) -> Option<String> {
+        let url = format!(
+            "{}/conversation/{}/attachment/{}/download",
+            self.base_url, conversation_id, file_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.base_headers.clone())
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_success() {
+            let res: Value = resp.json().await.ok()?;
+            res.get("download_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            error!("get_attachment_url failed: {}", resp.status());
+            None
+        }
+    }
+
+    /// 获取沙盒文件下载 URL（对齐 Python get_response_file_url）
+    pub async fn get_response_file_url(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        sandbox_path: &str,
+    ) -> Option<String> {
+        let url = format!("{}/conversation/{}/interpreter/download", self.base_url, conversation_id);
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.base_headers.clone())
+            .query(&[("message_id", message_id), ("sandbox_path", sandbox_path)])
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_success() {
+            let res: Value = resp.json().await.ok()?;
+            res.get("download_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            info!("Failed to get response file url");
+            None
+        }
     }
 }

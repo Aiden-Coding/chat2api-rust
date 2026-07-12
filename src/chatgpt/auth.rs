@@ -6,7 +6,7 @@ use log::{info, error};
 use md5;
 
 use crate::config::Config;
-use crate::globals::{AppState, RefreshInfo};
+use crate::globals::AppState;
 use crate::chatgpt::client::create_client;
 
 const ERROR_TOKENS_FILE: &str = "data/error_token.txt";
