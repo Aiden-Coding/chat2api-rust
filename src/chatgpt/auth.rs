@@ -177,7 +177,7 @@ async fn chat_refresh(
         None
     };
 
-    let client = create_client(proxy_url.as_deref())
+    let client = create_client(proxy_url.as_deref(), "safari15_3")
         .map_err(|e| ErrorInternalServerError(format!("Failed to create client: {:?}", e)))?;
 
     let payload = json!({

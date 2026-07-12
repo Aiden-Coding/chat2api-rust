@@ -86,8 +86,56 @@ impl ChatService {
         }
 
         // 使用默认或从 globals 取 fp (本例简写随机指纹)
-        let impersonate = "safari15_3".to_string();
-        let user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15".to_string();
+        let mut impersonate = "safari15_3".to_string();
+        let mut user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15".to_string();
+        let mut oai_device_id = Uuid::new_v4().to_string();
+        let mut sec_ch_ua = None;
+        let mut sec_ch_ua_platform = None;
+        let mut sec_ch_ua_mobile = None;
+
+        if !req_token.is_empty() {
+            let mut inner = state.inner.write().await;
+            if let Some(fp_val) = inner.fp_map.get(&req_token) {
+                if let Some(ua) = fp_val.get("user-agent").and_then(|v| v.as_str()) {
+                    user_agent = ua.to_string();
+                }
+                if let Some(imp) = fp_val.get("impersonate").and_then(|v| v.as_str()) {
+                    impersonate = imp.to_string();
+                }
+                if let Some(dev_id) = fp_val.get("oai-device-id").and_then(|v| v.as_str()) {
+                    oai_device_id = dev_id.to_string();
+                }
+                sec_ch_ua = fp_val.get("sec-ch-ua").and_then(|v| v.as_str()).map(|s| s.to_string());
+                sec_ch_ua_platform = fp_val.get("sec-ch-ua-platform").and_then(|v| v.as_str()).map(|s| s.to_string());
+                sec_ch_ua_mobile = fp_val.get("sec-ch-ua-mobile").and_then(|v| v.as_str()).map(|s| s.to_string());
+            } else {
+                let new_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string();
+                let new_imp = "chrome120".to_string();
+                let new_dev_id = Uuid::new_v4().to_string();
+                let new_ua_brand = "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"".to_string();
+                let new_ua_plat = "\"Windows\"".to_string();
+                let new_ua_mob = "?0".to_string();
+
+                let mut fp_obj = serde_json::Map::new();
+                fp_obj.insert("user-agent".to_string(), json!(new_ua));
+                fp_obj.insert("impersonate".to_string(), json!(new_imp));
+                fp_obj.insert("oai-device-id".to_string(), json!(new_dev_id));
+                fp_obj.insert("sec-ch-ua".to_string(), json!(new_ua_brand));
+                fp_obj.insert("sec-ch-ua-platform".to_string(), json!(new_ua_plat));
+                fp_obj.insert("sec-ch-ua-mobile".to_string(), json!(new_ua_mob));
+
+                user_agent = new_ua;
+                impersonate = new_imp;
+                oai_device_id = new_dev_id;
+                sec_ch_ua = Some(new_ua_brand);
+                sec_ch_ua_platform = Some(new_ua_plat);
+                sec_ch_ua_mobile = Some(new_ua_mob);
+
+                inner.fp_map.insert(req_token.clone(), Value::Object(fp_obj));
+                drop(inner);
+                state.save_fp_map().await;
+            }
+        }
 
         let host_url = if !config.chatgpt_base_url_list.is_empty() {
             let mut rng = rand::thread_rng();
@@ -113,9 +161,9 @@ impl ChatService {
             main_proxy.clone()
         };
 
-        let client = create_client(main_proxy.as_deref())
+        let client = create_client(main_proxy.as_deref(), &impersonate)
             .map_err(|e| ErrorInternalServerError(format!("Failed to create client: {:?}", e)))?;
-        let sentinel_client = create_client(sentinel_proxy.as_deref())
+        let sentinel_client = create_client(sentinel_proxy.as_deref(), &impersonate)
             .map_err(|e| ErrorInternalServerError(format!("Failed to create sentinel client: {:?}", e)))?;
 
         let mut base_headers = HeaderMap::new();
@@ -123,7 +171,7 @@ impl ChatService {
         base_headers.insert("accept-encoding", HeaderValue::from_static("gzip, deflate, br, zstd"));
         base_headers.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
         base_headers.insert("content-type", HeaderValue::from_static("application/json"));
-        base_headers.insert("oai-device-id", HeaderValue::from_str(&Uuid::new_v4().to_string()).unwrap());
+        base_headers.insert("oai-device-id", HeaderValue::from_str(&oai_device_id).unwrap());
         base_headers.insert("oai-language", HeaderValue::from_str(&config.oai_language).unwrap());
         base_headers.insert("origin", HeaderValue::from_str(&host_url).unwrap());
         base_headers.insert("priority", HeaderValue::from_static("u=1, i"));
@@ -132,6 +180,22 @@ impl ChatService {
         base_headers.insert("sec-fetch-mode", HeaderValue::from_static("cors"));
         base_headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
         base_headers.insert("user-agent", HeaderValue::from_str(&user_agent).unwrap());
+
+        if let Some(ref val) = sec_ch_ua {
+            if let Ok(hv) = HeaderValue::from_str(val) {
+                base_headers.insert("sec-ch-ua", hv);
+            }
+        }
+        if let Some(ref val) = sec_ch_ua_platform {
+            if let Ok(hv) = HeaderValue::from_str(val) {
+                base_headers.insert("sec-ch-ua-platform", hv);
+            }
+        }
+        if let Some(ref val) = sec_ch_ua_mobile {
+            if let Ok(hv) = HeaderValue::from_str(val) {
+                base_headers.insert("sec-ch-ua-mobile", hv);
+            }
+        }
 
         let base_url = if access_token.is_some() {
             base_headers.insert("authorization", HeaderValue::from_str(&format!("Bearer {}", access_token.as_ref().unwrap())).unwrap());
@@ -168,20 +232,40 @@ impl ChatService {
 
         let req_model = if origin_model.contains("o3-mini-high") {
             "o3-mini-high"
+        } else if origin_model.contains("o3-mini-medium") {
+            "o3-mini-medium"
+        } else if origin_model.contains("o3-mini-low") {
+            "o3-mini-low"
         } else if origin_model.contains("o3-mini") {
             "o3-mini"
+        } else if origin_model.contains("o3") {
+            "o3"
         } else if origin_model.contains("o1-preview") {
             "o1-preview"
+        } else if origin_model.contains("o1-pro") {
+            "o1-pro"
         } else if origin_model.contains("o1-mini") {
             "o1-mini"
+        } else if origin_model.contains("o1") {
+            "o1"
+        } else if origin_model.contains("gpt-4.5o") {
+            "gpt-4.5o"
+        } else if origin_model.contains("gpt-4o-canmore") {
+            "gpt-4o-canmore"
         } else if origin_model.contains("gpt-4o-mini") {
             "gpt-4o-mini"
         } else if origin_model.contains("gpt-4o") {
             "gpt-4o"
+        } else if origin_model.contains("gpt-4-mobile") {
+            "gpt-4-mobile"
         } else if origin_model.contains("gpt-4") {
             "gpt-4"
+        } else if origin_model.contains("gpt-3.5") {
+            "text-davinci-002-render-sha"
+        } else if origin_model.contains("auto") {
+            "auto"
         } else {
-            "text-davinci-002-render-sha" // 3.5 降级
+            "gpt-4o"
         }.to_string();
 
         let history_disabled = data.get("history_disabled").and_then(|v| v.as_bool()).unwrap_or(config.history_disabled);
@@ -404,6 +488,9 @@ impl ChatService {
                 headers.insert("openai-sentinel-turnstile-token", HeaderValue::from_str(turnstile).unwrap());
             }
         }
+
+        info!("Sending conversation request to: {}", url);
+        info!("Request body: {}", serde_json::to_string(&req_body).unwrap_or_default());
 
         let resp_res = self.client.post(&url)
             .headers(headers)

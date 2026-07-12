@@ -303,6 +303,7 @@ impl Stream for OpenAIStream {
                 return Poll::Ready(Some(Ok(Bytes::from("data: [DONE]\n\n"))));
             }
             Poll::Ready(Some(Err(e))) => {
+                error!("Error reading from raw_stream: {:?}", e);
                 self.end = true;
                 return Poll::Ready(Some(Err(std::io::Error::new(std::io::ErrorKind::Other, e))));
             }
@@ -327,7 +328,7 @@ impl Stream for OpenAIStream {
                     if !line.starts_with("data: {") {
                         continue;
                     }
-                    // info!("OpenAI chunk line: {}", line);
+                    info!("OpenAI chunk line: {}", line);
                     let json_str = &line[6..];
                     let old_data: Value = match serde_json::from_str(json_str) {
                         Ok(v) => v,
