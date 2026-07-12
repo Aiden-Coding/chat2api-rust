@@ -157,7 +157,7 @@ fn get_image_size(data: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-fn generate_random_fp(impersonate_list: &[String], user_agents_list: &[String]) -> (String, String, String, Option<String>, Option<String>, Option<String>) {
+pub fn generate_random_fp(impersonate_list: &[String], user_agents_list: &[String]) -> (String, String, String, Option<String>, Option<String>, Option<String>) {
     let mut rng = rand::thread_rng();
     
     let ua = if !user_agents_list.is_empty() {

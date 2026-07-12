@@ -71,3 +71,65 @@ Content-Type: application/json
     "your_token_to_delete_here"
   ]
 }
+
+# ==========================================
+# 3. Grok 会话与 Token 管理接口
+# ==========================================
+
+### 发送 Grok 会话请求 (流式)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "grok-4.3-console",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello! How are you?"
+    }
+  ],
+  "stream": true
+}
+
+### 发送 Grok 会话请求 (非流式)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "grok-4.3-fast",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ],
+  "stream": false
+}
+
+### 获取所有 Grok Token 列表
+GET {{host}}/grok_tokens/list
+
+### 快速添加单个 Grok Token
+GET {{host}}/grok_tokens/add/sso=YOUR_GROK_SSO_COOKIE
+
+### 批量上传 Grok Tokens
+POST {{host}}/grok_tokens/upload
+Content-Type: application/x-www-form-urlencoded
+
+text=sso=YOUR_GROK_SSO_COOKIE_1%0Asso=YOUR_GROK_SSO_COOKIE_2
+
+### 批量删除 Grok Tokens
+POST {{host}}/grok_tokens/delete
+Content-Type: application/json
+
+{
+  "tokens": [
+    "sso=YOUR_GROK_SSO_COOKIE_1"
+  ]
+}
+
+### 清空所有 Grok Tokens
+POST {{host}}/grok_tokens/clear
+
+### 获取故障黑名单 Grok Tokens 列表
+POST {{host}}/grok_tokens/error

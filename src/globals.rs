@@ -12,6 +12,8 @@ use crate::config::Config;
 const DATA_FOLDER: &str = "data";
 const TOKENS_FILE: &str = "data/token.txt";
 const ERROR_TOKENS_FILE: &str = "data/error_token.txt";
+const GROK_TOKENS_FILE: &str = "data/grok_token.txt";
+const GROK_ERROR_TOKENS_FILE: &str = "data/grok_error_token.txt";
 const DATABASE_FILE: &str = "data/data.db";
 
 /// 记录 WebSocket 握手状态与 URL 映射的元数据结构
@@ -34,6 +36,8 @@ pub struct RefreshInfo {
 pub struct AppStateInner {
     pub token_list: Vec<String>,             // 从 token.txt 载入的全部 Token 列表 (含黑名单)
     pub error_token_list: Vec<String>,       // 标记为异常失效的黑名单 Token 列表
+    pub grok_token_list: Vec<String>,        // 从 grok_token.txt 载入的全部 Grok SSO Token 列表 (含黑名单)
+    pub grok_error_token_list: Vec<String>,  // 标记为异常失效的黑名单 Grok SSO Token 列表
     pub refresh_map: HashMap<String, serde_json::Value>, // 缓存：RefreshToken -> {token, timestamp} 映射
     pub wss_map: HashMap<String, WssInfo>,               // 缓存：Token -> WssInfo 映射
     pub fp_map: HashMap<String, serde_json::Value>,      // 缓存：Token -> 浏览器JA3指纹 JSON 映射
@@ -99,6 +103,38 @@ impl AppState {
             }
         }
 
+        // 1.5 加载或平滑迁移主 Grok tokens 列表
+        let mut grok_token_list = Self::load_list_from_db(&conn, "grok_tokens");
+        if grok_token_list.is_empty() {
+            if Path::new(GROK_TOKENS_FILE).exists() {
+                if let Ok(content) = fs::read_to_string(GROK_TOKENS_FILE) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            grok_token_list.push(trimmed.to_string());
+                            Self::save_item_to_db("grok_tokens", trimmed, &"");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2.5 加载或平滑迁移 grok_error_tokens 列表
+        let mut grok_error_token_list = Self::load_list_from_db(&conn, "grok_error_tokens");
+        if grok_error_token_list.is_empty() {
+            if Path::new(GROK_ERROR_TOKENS_FILE).exists() {
+                if let Ok(content) = fs::read_to_string(GROK_ERROR_TOKENS_FILE) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            grok_error_token_list.push(trimmed.to_string());
+                            Self::save_item_to_db("grok_error_tokens", trimmed, &"");
+                        }
+                    }
+                }
+            }
+        }
+
         // 如果用户在环境变量中未配置混淆指纹，则装载默认的主流指纹名称列表
         let impersonate_list = if config.impersonate_list.is_empty() {
             vec![
@@ -123,11 +159,17 @@ impl AppState {
             info!("加载数据成功：主 Tokens 数: {}, 故障黑名单 Tokens 数: {}", token_list.len(), error_token_list.len());
             info!("------------------------------------------------------------");
         }
+        if !grok_token_list.is_empty() {
+            info!("加载 Grok 数据成功：主 Grok Tokens 数: {}, 故障黑名单 Grok Tokens 数: {}", grok_token_list.len(), grok_error_token_list.len());
+            info!("------------------------------------------------------------");
+        }
 
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 token_list,
                 error_token_list,
+                grok_token_list,
+                grok_error_token_list,
                 refresh_map,
                 wss_map,
                 fp_map,
@@ -168,6 +210,14 @@ impl AppState {
         );
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS error_tokens (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS grok_tokens (key TEXT PRIMARY KEY, val TEXT)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS grok_error_tokens (key TEXT PRIMARY KEY, val TEXT)",
             [],
         );
         conn
@@ -314,6 +364,74 @@ impl AppState {
                 error!("无法打开 SQLite 数据库以执行删除 token");
             }
         }).await.unwrap_or_else(|e| error!("spawn_blocking 删除 tokens 失败: {:?}", e));
+    }
+
+    /// 保存当前的 Grok Token 列表并同步写盘
+    pub async fn save_grok_token_list(&self, tokens: Vec<String>) {
+        {
+            let mut inner = self.inner.write().await;
+            inner.grok_token_list = tokens.clone();
+        }
+        tokio::task::spawn_blocking(move || {
+            Self::clear_table_in_db("grok_tokens");
+            for token in tokens {
+                Self::save_item_to_db("grok_tokens", &token, &"");
+            }
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 写入 grok_tokens 失败: {:?}", e));
+    }
+
+    /// 追加单个 Grok Token 到内存和本地文件中（去重处理）
+    pub async fn append_grok_token(&self, token: &str) -> bool {
+        let trimmed = token.trim().to_string();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            {
+                let mut inner = self.inner.write().await;
+                if inner.grok_token_list.contains(&trimmed) {
+                    return false; // 重复，跳过
+                }
+                inner.grok_token_list.push(trimmed.clone());
+            }
+            let tok = trimmed;
+            tokio::task::spawn_blocking(move || {
+                Self::save_item_to_db("grok_tokens", &tok, &"");
+            }).await.unwrap_or_else(|e| error!("spawn_blocking 追加 grok token 失败: {:?}", e));
+            return true;
+        }
+        false
+    }
+
+    /// 清空所有内存的 Grok Token 和 error Grok Token，并清空对应文件
+    pub async fn clear_grok_tokens(&self) {
+        {
+            let mut inner = self.inner.write().await;
+            inner.grok_token_list.clear();
+            inner.grok_error_token_list.clear();
+        }
+        tokio::task::spawn_blocking(|| {
+            Self::clear_table_in_db("grok_tokens");
+            Self::clear_table_in_db("grok_error_tokens");
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 清空 grok tokens 失败: {:?}", e));
+    }
+
+    /// 从内存和数据库中批量删除指定的 Grok Token 凭证
+    pub async fn delete_grok_tokens(&self, tokens_to_delete: Vec<String>) {
+        {
+            let mut inner = self.inner.write().await;
+            for token in &tokens_to_delete {
+                inner.grok_token_list.retain(|t| t != token);
+                inner.grok_error_token_list.retain(|t| t != token);
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = Connection::open(DATABASE_FILE) {
+                for token in tokens_to_delete {
+                    let _ = conn.execute("DELETE FROM grok_tokens WHERE key = ?1", params![token]);
+                    let _ = conn.execute("DELETE FROM grok_error_tokens WHERE key = ?1", params![token]);
+                }
+            } else {
+                error!("无法打开 SQLite 数据库以执行删除 grok token");
+            }
+        }).await.unwrap_or_else(|e| error!("spawn_blocking 删除 grok tokens 失败: {:?}", e));
     }
 
     /// 更新并写盘 RefreshToken 映射数据

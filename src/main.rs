@@ -5,7 +5,10 @@ use log::info;
 use chat2api::config::Config;
 use chat2api::globals::AppState;
 use chat2api::chatgpt::auth::refresh_all_tokens;
-use chat2api::api::routes::{send_conversation, upload_html, upload_post, clear_tokens, error_tokens, get_token_list, delete_tokens, add_token, clear_seed_tokens};
+use chat2api::api::routes::{
+    send_conversation, upload_html, upload_post, clear_tokens, error_tokens, get_token_list, delete_tokens, add_token, clear_seed_tokens,
+    grok_upload_html, grok_upload_post, grok_clear_tokens, grok_error_tokens, grok_get_token_list, grok_delete_tokens, grok_add_token
+};
 
 /// Actix-web 服务运行主入口函数
 #[actix_web::main]
@@ -110,6 +113,13 @@ async fn main() -> std::io::Result<()> {
                     .service(delete_tokens)
                     .service(add_token)
                     .service(clear_seed_tokens)
+                    .service(grok_upload_html)
+                    .service(grok_upload_post)
+                    .service(grok_clear_tokens)
+                    .service(grok_error_tokens)
+                    .service(grok_get_token_list)
+                    .service(grok_delete_tokens)
+                    .service(grok_add_token)
             )
     })
     .bind(("0.0.0.0", port))?

@@ -40,6 +40,19 @@ pub async fn send_conversation(
     };
 
     let req_body = body.into_inner();
+    let model_name = req_body.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    if model_name.starts_with("grok") || model_name.contains("grok") {
+        match crate::grok::service::handle_grok_conversation(
+            origin_token,
+            req_body,
+            state,
+            config,
+        ).await {
+            Ok(resp) => return resp,
+            Err(e) => return HttpResponse::from_error(e),
+        }
+    }
+
     let max_retries = config.retry_times; // 最大重试次数
     let mut last_err = None;
 
@@ -293,5 +306,144 @@ pub async fn clear_seed_tokens(
     HttpResponse::Ok().json(json!({
         "status": "success",
         "seed_tokens_count": 0
+    }))
+}
+
+/// 渲染批量 grok tokens 管理的前端 html 页面：GET /grok_tokens
+#[get("/grok_tokens")]
+pub async fn grok_upload_html(
+    state: web::Data<AppState>,
+    config: web::Data<Config>,
+    tera: web::Data<Tera>,
+) -> impl Responder {
+    let inner = state.inner.read().await;
+    let mut tokens_count = 0;
+    for t in &inner.grok_token_list {
+        if !inner.grok_error_token_list.contains(t) {
+            tokens_count += 1;
+        }
+    }
+
+    let mut context = Context::new();
+    context.insert("api_prefix", &config.api_prefix.clone().unwrap_or_default());
+    context.insert("tokens_count", &tokens_count);
+
+    match tera.render("grok_tokens.html", &context) {
+        Ok(html) => HttpResponse::Ok().content_type("text/html").body(html),
+        Err(e) => {
+            error!("Tera 模板渲染异常: {:?}", e);
+            HttpResponse::InternalServerError().body("Internal Server Error")
+        }
+    }
+}
+
+/// 批量上传/导入 Grok Token：POST /grok_tokens/upload
+#[post("/grok_tokens/upload")]
+pub async fn grok_upload_post(
+    form: web::Form<TokenUploadForm>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let mut added_count = 0;
+    let lines = form.text.split('\n');
+    
+    for line in lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            if state.append_grok_token(trimmed).await {
+                added_count += 1;
+            }
+        }
+    }
+
+    let inner = state.inner.read().await;
+    let active_count = inner.grok_token_list.iter()
+        .filter(|t| !inner.grok_error_token_list.contains(t))
+        .count();
+
+    info!("成功上传了 {} 个 Grok Tokens。当前处于活跃状态的 Grok Tokens: {}", added_count, active_count);
+
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "tokens_count": active_count,
+        "added_count": added_count
+    }))
+}
+
+/// 清空所有的 Grok Token 列表：POST /grok_tokens/clear
+#[post("/grok_tokens/clear")]
+pub async fn grok_clear_tokens(
+    state: web::Data<AppState>,
+) -> impl Responder {
+    state.clear_grok_tokens().await;
+    info!("已成功清空所有的 Grok Token。");
+    
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "tokens_count": 0
+    }))
+}
+
+/// 获取当前所有标记为异常的错误 Grok Token 列表：POST /grok_tokens/error
+#[post("/grok_tokens/error")]
+pub async fn grok_error_tokens(
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let inner = state.inner.read().await;
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "error_tokens": inner.grok_error_token_list
+    }))
+}
+
+/// 获取当前所有 Grok Token 列表：GET /grok_tokens/list
+#[get("/grok_tokens/list")]
+pub async fn grok_get_token_list(
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let inner = state.inner.read().await;
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "tokens": inner.grok_token_list,
+        "error_tokens": inner.grok_error_token_list
+    }))
+}
+
+/// 批量/单个删除 Grok Token：POST /grok_tokens/delete
+#[post("/grok_tokens/delete")]
+pub async fn grok_delete_tokens(
+    body: web::Json<DeleteTokensRequest>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let req = body.into_inner();
+    let count = req.tokens.len();
+    state.delete_grok_tokens(req.tokens).await;
+    info!("已成功从池子中删除了 {} 个 Grok Token 凭证。", count);
+    
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "deleted_count": count
+    }))
+}
+
+/// 快速追加单个 Grok Token 到内存和文件：GET /grok_tokens/add/{token}
+#[get("/grok_tokens/add/{token}")]
+pub async fn grok_add_token(
+    path: web::Path<String>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let token = path.into_inner();
+    let trimmed = token.trim();
+    if !trimmed.is_empty() && !trimmed.starts_with('#') {
+        state.append_grok_token(trimmed).await;
+    }
+
+    let inner = state.inner.read().await;
+    let active_count = inner.grok_token_list.iter()
+        .filter(|t| !inner.grok_error_token_list.contains(t))
+        .count();
+
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "tokens_count": active_count
     }))
 }
