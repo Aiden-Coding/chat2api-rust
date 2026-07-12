@@ -38,67 +38,96 @@ pub async fn send_conversation(
     };
 
     let req_body = body.into_inner();
-    
-    // 初始化 ChatService 实例
-    let service_res = ChatService::new(
-        (*state.into_inner()).clone(),
-        (*config.into_inner()).clone(),
-        origin_token,
-        &req_body,
-    ).await;
-
-    let mut service = match service_res {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::from_error(e),
-    };
-
-    // Sentinel 握手与解决 POW
-    if let Err(e) = service.get_chat_requirements().await {
-        error!("Sentinel handshake failed in completions: {:?}", e);
-        return HttpResponse::from_error(e);
-    }
+    let max_retries = config.retry_times;
+    let mut last_err = None;
 
     let is_stream = req_body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     let max_tokens = req_body.get("max_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(usize::MAX as u64) as usize;
-
     let api_messages = req_body.get("messages").cloned().unwrap_or(json!([]));
-    let upload_by_url = service.config.upload_by_url;
-
-    // 格式化 OpenAI messages 列表到 ChatGPT 消息协议格式
-    let (chat_messages, prompt_tokens) = match api_messages_to_chat(&service, &api_messages, upload_by_url).await {
-        Ok(res) => res,
-        Err(e) => return HttpResponse::from_error(e),
-    };
-
     let parent_msg_id = req_body.get("parent_message_id").and_then(|v| v.as_str());
 
-    // 准备请求体并发送会话请求
-    let chat_req_body = service.prepare_send_conversation(chat_messages, parent_msg_id).await;
-    let response = match service.send_conversation_request(chat_req_body).await {
-        Ok(resp) => resp,
-        Err(e) => return HttpResponse::from_error(e),
-    };
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            info!("Retrying send_conversation (attempt {}/{})...", attempt, max_retries);
+        }
 
-    let service_arc = Arc::new(service);
-    let model = service_arc.resp_model.clone();
-    
-    // 把原始流的 bytes 传递下去
-    let raw_stream = Box::pin(response.bytes_stream());
-    let openai_stream = OpenAIStream::new(service_arc.clone(), raw_stream, model.clone(), max_tokens);
+        // 1. 初始化 ChatService 实例
+        let service = match ChatService::new(
+            state.get_ref().clone(),
+            config.get_ref().clone(),
+            origin_token.clone(),
+            &req_body,
+        ).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Attempt {} failed: ChatService::new error: {:?}", attempt, e);
+                last_err = Some(e);
+                continue;
+            }
+        };
 
-    if is_stream {
-        HttpResponse::Ok()
-            .content_type("text/event-stream")
-            .streaming(openai_stream)
-    } else {
-        // 非流式：将流式数据融合成一个最终 JSON 结构
-        match format_not_stream_response(openai_stream, prompt_tokens, max_tokens, model).await {
-            Ok(json_res) => HttpResponse::Ok().json(json_res),
-            Err(e) => HttpResponse::from_error(e),
+        let mut service = service;
+
+        // 2. Sentinel 握手与解决 POW
+        if let Err(e) = service.get_chat_requirements().await {
+            error!("Attempt {} failed: Sentinel handshake error: {:?}", attempt, e);
+            last_err = Some(e);
+            continue;
+        }
+
+        let upload_by_url = service.config.upload_by_url;
+
+        // 3. 格式化 OpenAI messages 列表到 ChatGPT 消息协议格式
+        let (chat_messages, prompt_tokens) = match api_messages_to_chat(&service, &api_messages, upload_by_url).await {
+            Ok(res) => res,
+            Err(e) => {
+                error!("Attempt {} failed: api_messages_to_chat error: {:?}", attempt, e);
+                last_err = Some(e);
+                continue;
+            }
+        };
+
+        // 4. 准备请求体并发送会话请求
+        let chat_req_body = service.prepare_send_conversation(chat_messages, parent_msg_id).await;
+        let response = match service.send_conversation_request(chat_req_body).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Attempt {} failed: send_conversation_request error: {:?}", attempt, e);
+                last_err = Some(e);
+                continue;
+            }
+        };
+
+        // 成功建立连接，退出重试
+        let service_arc = Arc::new(service);
+        let model = service_arc.resp_model.clone();
+        
+        // 把原始流的 bytes 传递下去
+        let raw_stream = Box::pin(response.bytes_stream());
+        let openai_stream = OpenAIStream::new(service_arc.clone(), raw_stream, model.clone(), max_tokens);
+
+        if is_stream {
+            return HttpResponse::Ok()
+                .content_type("text/event-stream")
+                .streaming(openai_stream);
+        } else {
+            // 非流式：将流式数据融合成一个最终 JSON 结构
+            match format_not_stream_response(openai_stream, prompt_tokens, max_tokens, model).await {
+                Ok(json_res) => return HttpResponse::Ok().json(json_res),
+                Err(e) => {
+                    error!("Attempt {} failed: format_not_stream_response error: {:?}", attempt, e);
+                    last_err = Some(e);
+                    continue;
+                }
+            }
         }
     }
+
+    // 所有重试都失败了
+    let final_err = last_err.unwrap_or_else(|| actix_web::error::ErrorInternalServerError("Unknown server error"));
+    HttpResponse::from_error(final_err)
 }
 
 // tokens.html 渲染页面

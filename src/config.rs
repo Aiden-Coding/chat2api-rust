@@ -32,6 +32,7 @@ pub struct Config {
     pub auto_seed: bool,
     pub force_no_history: bool,
     pub no_sentinel: bool,
+    pub cf_file_url: Option<String>,
     pub version: String,
 }
 
@@ -93,6 +94,7 @@ impl Config {
         let user_agents_list = parse_json_array(&user_agents_list_str);
 
         let turnstile_solver_url = env::var("TURNSTILE_SOLVER_URL").ok().filter(|s| !s.trim().is_empty());
+        let cf_file_url = env::var("CF_FILE_URL").ok().filter(|s| !s.trim().is_empty());
 
         let history_disabled = env::var("HISTORY_DISABLED")
             .map(|v| parse_bool(&v))
@@ -176,6 +178,7 @@ impl Config {
             auto_seed,
             force_no_history,
             no_sentinel,
+            cf_file_url,
             version,
         };
 
@@ -201,6 +204,7 @@ impl Config {
         info!("VOICE_HOST:        {:?}", self.voice_host);
         info!("IMPERSONATE:       {:?}", self.impersonate_list);
         info!("USER_AGENTS:       {:?}", self.user_agents_list);
+        info!("CF_FILE_URL:       {:?}", self.cf_file_url);
         info!("---------------------- Functionality -----------------------");
         info!("HISTORY_DISABLED:  {}", self.history_disabled);
         info!("POW_DIFFICULTY:    {}", self.pow_difficulty);

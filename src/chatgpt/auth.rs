@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use rand::seq::SliceRandom;
 use serde_json::json;
 use actix_web::error::{ErrorUnauthorized, ErrorInternalServerError};
@@ -60,15 +61,10 @@ pub async fn get_req_token(
                     let chosen = available_tokens.choose(&mut rng).unwrap().clone();
                     return Ok(chosen);
                 } else {
-                    // 顺序轮询，在全局维护一个计数器
-                    // 我们可以在 globals.rs 里面用全局 AtomicUsize 或简单加锁更新。
-                    // 简单起见，从 inner 里每次自增
-                    static mut ROUND_ROBIN_COUNTER: usize = 0;
-                    unsafe {
-                        ROUND_ROBIN_COUNTER += 1;
-                        let index = ROUND_ROBIN_COUNTER % available_tokens.len();
-                        return Ok(available_tokens[index].clone());
-                    }
+                    static ROUND_ROBIN_COUNTER: AtomicUsize = AtomicUsize::new(0);
+                    let count = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed);
+                    let index = count % available_tokens.len();
+                    return Ok(available_tokens[index].clone());
                 }
             } else {
                 return Ok(String::new());

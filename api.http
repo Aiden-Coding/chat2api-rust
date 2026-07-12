@@ -1,0 +1,60 @@
+@host = http://127.0.0.1:5005
+@token = eyJhbGciOiJSUzI1NiIsImtpZCI6ImFlNjc5NWRjLTRiYWUtNDE4YS04NjVkLTA4YTY0MzllZWRhNiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWDh6WTZ2VzJwUTl0UjNkRTduSzFqTDVnSCIsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJhbXIiOlsib3RwIiwidXJuOm9wZW5haTphbXI6b3RwX2VtYWlsIl0sImNoYXRncHRfYWNjb3VudF9pZCI6ImFmNDcwMTM1LWE5ZjAtNDA4ZC05Y2QwLTkzZTNjNWJjNDljNiIsImNoYXRncHRfYWNjb3VudF91c2VyX2lkIjoidXNlci1DMkV3NGh6SWpBWjRJQ3JiVlkwRm0zSDRfX2FmNDcwMTM1LWE5ZjAtNDA4ZC05Y2QwLTkzZTNjNWJjNDljNiIsImNoYXRncHRfY29tcHV0ZV9yZXNpZGVuY3kiOiJub19jb25zdHJhaW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJmcmVlIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci1DMkV3NGh6SWpBWjRJQ3JiVlkwRm0zSDQiLCJ1c2VyX2lkIjoidXNlci1DMkV3NGh6SWpBWjRJQ3JiVlkwRm0zSDQifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoiYWlkZW5fZGV2QGljbG91ZC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6ImFpZGVuX2RldiJ9LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInB3ZF9hdXRoX3RpbWUiOjE3ODM2ODIyNTUyNjUsInNjcCI6WyJvcGVuaWQiLCJlbWFpbCIsInByb2ZpbGUiLCJvZmZsaW5lX2FjY2VzcyIsIm1vZGVsLnJlcXVlc3QiLCJtb2RlbC5yZWFkIiwib3JnYW5pemF0aW9uLnJlYWQiLCJvcmdhbml6YXRpb24ud3JpdGUiXSwic2Vzc2lvbl9pZCI6ImF1dGhzZXNzXzhYdUVBMERXbUlHdTBhQjU2REhRb0ZYUSIsInNsIjp0cnVlLCJzdWIiOiJhdXRoMHxoR1dxSGdVUGNvWDRTMDl3NzlCa21ZZnMiLCJpYXQiOjE3ODM2ODIyNTYsImV4cCI6MTc4NDU0NjI1NiwianRpIjoiMWM3OWIzZTA0N2UzNGE0YzhlMWEwZmY3YTE0YTc3OGYiLCJuYmYiOjE3ODM2ODIyNTZ9.Cc6siekvar-rF9BcUg_GD57rboAx8FcGHKej_gB9mGqxeAMm_-9TKK2qeGh3qs3FgIG1C8mt11QC3cl0njO3fO_VN-RQZQImI4EnYf4yYzfWZfsAk4ILyOiCVDwMwU29hzUXJNcn-LFNif5a7Rjej1MxeJVzbsOKhqZlBMVm6N0cAMOnZ5NGEGK6c_TVsaNXK8fMF9nTTA8FblwVvXIG_Fel_0cTM0fHGF6lOYTYx5MnpJ_g1nnmAkESNpNGQvE7VyWTS2H_aoLwK52crv_br8hWvScah__ET0MSN_7qGv0SAZqol2ZYJOBVCzDcEPJZ5pD7LXcL7A85VTqUKCm2XBZ5inAU33mrU6_kUFjmV7QYhxpJF0x1yB5JcmIL9MVfj0A3kihqNLesuFGyh1RbWFl8G592MVQDJXbhbsE9eZq1vbyZ8cfAjH-OR1xpTaRH7Q_PdqEie0tnlrMyOAXs22l0jrgLBeAefAAL-Y99PbxjZdo9ovMTSVL0gTxQjMg0SloXqPMxqJsdhnoz4lu5JnYzdvcoE1g5iWw9QWNDS_1dG8-XV4FtX0c9pOwiHD2aKUIy87IfGwL32MY8i7Jo1NUofsOwhUqhCzKbjihXLODzMx3Ioe_3pgMypaFqjsfz8HwmwVy5E2Dd0gBE4XEeBW1YkPs2CtY3-KPft2EY7Sc
+
+# ==========================================
+# 1. 核心会话接口 (Chat Completions)
+# ==========================================
+
+### 发送会话请求 (非流式)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "model": "auto",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello! How are you?"
+    }
+  ],
+  "stream": false
+}
+
+### 发送会话请求 (流式)
+POST {{host}}/v1/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "model": "auto",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello! How are you?"
+    }
+  ],
+  "stream": true
+}
+
+# ==========================================
+# 2. Token 管理接口
+# ==========================================
+
+### 获取 Token 渲染页面 (HTML)
+GET {{host}}/tokens
+
+### 批量上传 Token
+POST {{host}}/tokens/upload
+Content-Type: application/x-www-form-urlencoded
+
+text=your_token_1%0Ayour_token_2
+
+### 清空 Token 列表
+POST {{host}}/tokens/clear
+
+### 获取错误 Token 列表
+POST {{host}}/tokens/error
+
+### 追加单个 Token
+GET {{host}}/tokens/add/your_single_token_here

@@ -94,7 +94,7 @@ fn determine_file_use_case(mime_type: &str) -> &'static str {
     }
 }
 
-/// 从图片字节中粗略读取宽高（仅支持 JPEG/PNG）
+/// 从图片字节中粗略读取宽高（支持 JPEG/PNG/GIF/WEBP）
 fn get_image_size(data: &[u8]) -> Option<(u32, u32)> {
     // PNG: signature 8 bytes, then IHDR chunk: 4(len) + 4(type) + 4(w) + 4(h)
     if data.len() >= 24 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
@@ -122,7 +122,86 @@ fn get_image_size(data: &[u8]) -> Option<(u32, u32)> {
             i += 2 + seg_len;
         }
     }
+    // GIF
+    if data.len() >= 10 && (data.starts_with(b"GIF89a") || data.starts_with(b"GIF87a")) {
+        let w = u16::from_le_bytes([data[6], data[7]]) as u32;
+        let h = u16::from_le_bytes([data[8], data[9]]) as u32;
+        return Some((w, h));
+    }
+    // WEBP
+    if data.len() >= 16 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        let vp8_type = &data[12..16];
+        if vp8_type == b"VP8X" && data.len() >= 30 {
+            let w = ((data[26] as u32) << 16 | (data[25] as u32) << 8 | data[24] as u32) + 1;
+            let h = ((data[29] as u32) << 16 | (data[28] as u32) << 8 | data[27] as u32) + 1;
+            return Some((w, h));
+        } else if vp8_type == b"VP8L" && data.len() >= 25 {
+            if data[20] == 0x2f {
+                let b1 = data[21];
+                let b2 = data[22];
+                let b3 = data[23];
+                let b4 = data[24];
+                let w = (((b2 as u32 & 0x3F) << 8) | b1 as u32) + 1;
+                let h = ((((b4 as u32 & 0xF) << 10) | ((b3 as u32) << 2) | ((b2 as u32 & 0xC0) >> 6)) & 0x3FFF) + 1;
+                return Some((w, h));
+            }
+        } else if vp8_type == b"VP8 " && data.len() >= 30 {
+            let w = u16::from_le_bytes([data[26], data[27]]) & 0x3FFF;
+            let h = u16::from_le_bytes([data[28], data[29]]) & 0x3FFF;
+            return Some((w as u32, h as u32));
+        }
+    }
     None
+}
+
+fn generate_random_fp(impersonate_list: &[String], user_agents_list: &[String]) -> (String, String, String, Option<String>, Option<String>, Option<String>) {
+    let mut rng = rand::thread_rng();
+    
+    let ua = if !user_agents_list.is_empty() {
+        user_agents_list.choose(&mut rng).unwrap().clone()
+    } else {
+        let chrome_versions = [120, 121, 122, 123, 124];
+        let chrome_ver = chrome_versions.choose(&mut rng).unwrap();
+        let is_mac = rng.gen_bool(0.5);
+        if is_mac {
+            format!("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36", chrome_ver)
+        } else {
+            format!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36", chrome_ver)
+        }
+    };
+
+    let imp = if !impersonate_list.is_empty() {
+        impersonate_list.choose(&mut rng).unwrap().clone()
+    } else {
+        let default_imps = ["chrome119", "chrome120", "chrome123", "safari15_3", "edge101"];
+        default_imps.choose(&mut rng).unwrap().to_string()
+    };
+
+    let dev_id = Uuid::new_v4().to_string();
+
+    let mut sec_ch_ua = None;
+    let mut sec_ch_ua_platform = None;
+    let sec_ch_ua_mobile = Some("?0".to_string());
+
+    if ua.contains("Chrome/") {
+        let version = ua.split("Chrome/").nth(1).and_then(|s| s.split('.').next()).unwrap_or("120");
+        sec_ch_ua = Some(format!("\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"{0}\", \"Google Chrome\";v=\"{0}\"", version));
+        if ua.contains("Windows") {
+            sec_ch_ua_platform = Some("\"Windows\"".to_string());
+        } else if ua.contains("Macintosh") {
+            sec_ch_ua_platform = Some("\"macOS\"".to_string());
+        }
+    } else if ua.contains("Edge/") || ua.contains("Edg/") {
+        let version = ua.split("Edg/").nth(1).or_else(|| ua.split("Edge/").nth(1)).and_then(|s| s.split('.').next()).unwrap_or("120");
+        sec_ch_ua = Some(format!("\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"{0}\", \"Microsoft Edge\";v=\"{0}\"", version));
+        if ua.contains("Windows") {
+            sec_ch_ua_platform = Some("\"Windows\"".to_string());
+        } else if ua.contains("Macintosh") {
+            sec_ch_ua_platform = Some("\"macOS\"".to_string());
+        }
+    }
+
+    (ua, imp, dev_id, sec_ch_ua, sec_ch_ua_platform, sec_ch_ua_mobile)
 }
 
 impl ChatService {
@@ -181,27 +260,29 @@ impl ChatService {
                 sec_ch_ua_platform = fp_val.get("sec-ch-ua-platform").and_then(|v| v.as_str()).map(|s| s.to_string());
                 sec_ch_ua_mobile = fp_val.get("sec-ch-ua-mobile").and_then(|v| v.as_str()).map(|s| s.to_string());
             } else {
-                let new_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string();
-                let new_imp = "chrome120".to_string();
-                let new_dev_id = Uuid::new_v4().to_string();
-                let new_ua_brand = "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"".to_string();
-                let new_ua_plat = "\"Windows\"".to_string();
-                let new_ua_mob = "?0".to_string();
+                let (new_ua, new_imp, new_dev_id, sec_ch_ua_val, sec_ch_ua_plat_val, sec_ch_ua_mob_val) = 
+                    generate_random_fp(&inner.impersonate_list, &config.user_agents_list);
 
                 let mut fp_obj = serde_json::Map::new();
                 fp_obj.insert("user-agent".to_string(), json!(new_ua));
                 fp_obj.insert("impersonate".to_string(), json!(new_imp));
                 fp_obj.insert("oai-device-id".to_string(), json!(new_dev_id));
-                fp_obj.insert("sec-ch-ua".to_string(), json!(new_ua_brand));
-                fp_obj.insert("sec-ch-ua-platform".to_string(), json!(new_ua_plat));
-                fp_obj.insert("sec-ch-ua-mobile".to_string(), json!(new_ua_mob));
+                if let Some(ref val) = sec_ch_ua_val {
+                    fp_obj.insert("sec-ch-ua".to_string(), json!(val));
+                }
+                if let Some(ref val) = sec_ch_ua_plat_val {
+                    fp_obj.insert("sec-ch-ua-platform".to_string(), json!(val));
+                }
+                if let Some(ref val) = sec_ch_ua_mob_val {
+                    fp_obj.insert("sec-ch-ua-mobile".to_string(), json!(val));
+                }
 
                 user_agent = new_ua;
                 impersonate = new_imp;
                 oai_device_id = new_dev_id;
-                sec_ch_ua = Some(new_ua_brand);
-                sec_ch_ua_platform = Some(new_ua_plat);
-                sec_ch_ua_mobile = Some(new_ua_mob);
+                sec_ch_ua = sec_ch_ua_val;
+                sec_ch_ua_platform = sec_ch_ua_plat_val;
+                sec_ch_ua_mobile = sec_ch_ua_mob_val;
 
                 inner.fp_map.insert(req_token.clone(), Value::Object(fp_obj));
                 drop(inner);
@@ -543,6 +624,60 @@ impl ChatService {
                             }
                         }
                     }
+
+                    // 处理 Arkose
+                    let arkose_opt = json_val.get("arkose").or_else(|| json_val.get("ark0se"));
+                    if let Some(arkose) = arkose_opt {
+                        if arkose.get("required").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            let method = if persona == "chatgpt-freeaccount" {
+                                "chat35"
+                            } else {
+                                "chat4"
+                            };
+                            if self.config.ark0se_token_url_list.is_empty() {
+                                return Err(ErrorForbidden("Arkose service required"));
+                            }
+                            let ark0se_dx = arkose.get("dx").and_then(|v| v.as_str()).unwrap_or("");
+                            
+                            let mut rng = rand::thread_rng();
+                            let ark0se_token_url = self.config.ark0se_token_url_list.choose(&mut rng).unwrap();
+
+                            let ark0se_client = create_client(self.config.proxy_url_list.choose(&mut rng).map(|s| s.as_str()), &self.impersonate)
+                                .map_err(|e| ErrorInternalServerError(format!("Failed to create arkose client: {:?}", e)))?;
+
+                            let payload = json!({
+                                "blob": ark0se_dx,
+                                "method": method
+                            });
+
+                            let resp_res = ark0se_client.post(ark0se_token_url).json(&payload).send().await;
+                            match resp_res {
+                                Ok(r) => {
+                                    if r.status().is_success() {
+                                        if let Ok(r_json) = r.json::<Value>().await {
+                                            let solved = r_json.get("solved").and_then(|v| v.as_bool()).unwrap_or(true);
+                                            if solved {
+                                                if let Some(t) = r_json.get("token").and_then(|v| v.as_str()) {
+                                                    self.ark0se_token = Some(t.to_string());
+                                                } else {
+                                                    return Err(ErrorForbidden("Failed to get Ark0se token (missing token)"));
+                                                }
+                                            } else {
+                                                return Err(ErrorForbidden("Failed to get Ark0se token (not solved)"));
+                                            }
+                                        } else {
+                                            return Err(ErrorForbidden("Failed to parse Ark0se token response"));
+                                        }
+                                    } else {
+                                        return Err(ErrorForbidden(format!("Ark0se solver returned status: {}", r.status())));
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(ErrorForbidden(format!("Failed to request Ark0se token: {:?}", e)));
+                                }
+                            }
+                        }
+                    }
                     Ok(())
                 } else {
                     let err_text = resp.text().await.unwrap_or_default();
@@ -711,27 +846,109 @@ impl ChatService {
 
     // 辅助多模态文件下载
     pub async fn get_file_content_from_url(&self, url: &str) -> Result<(Vec<u8>, String), actix_web::Error> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ErrorBadRequest(format!("Failed to fetch file URL: {:?}", e)))?;
-        let mime = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .split(';')
-            .next()
-            .unwrap_or("application/octet-stream")
-            .trim()
-            .to_string();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ErrorBadRequest(format!("Failed to read file bytes: {:?}", e)))?;
-        Ok((bytes.to_vec(), mime))
+        if url.starts_with("data:") {
+            let parts: Vec<&str> = url.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                let header = parts[0];
+                let base64_data = parts[1];
+                let mime_type = header
+                    .split(';')
+                    .next()
+                    .and_then(|s| s.split(':').nth(1))
+                    .unwrap_or("image/png")
+                    .to_string();
+                
+                if let Ok(decoded_bytes) = base64::Engine::decode(&base64::prelude::BASE64_STANDARD, base64_data) {
+                    return Ok((decoded_bytes, mime_type));
+                }
+            }
+            return Err(ErrorBadRequest("Failed to decode data URL base64"));
+        }
+
+        let mut builder = rquest::Client::builder()
+            .impersonate(rquest::tls::Impersonate::Safari15_3)
+            .danger_accept_invalid_certs(true);
+
+        if let Some(ref export_proxy) = self.config.export_proxy_url {
+            if !export_proxy.is_empty() {
+                if let Ok(proxy) = rquest::Proxy::all(export_proxy) {
+                    builder = builder.proxy(proxy);
+                }
+            }
+        }
+        let download_client = builder.build()
+            .map_err(|e| ErrorInternalServerError(format!("Failed to create download client: {:?}", e)))?;
+
+        let (bytes, mime) = if let Some(ref cf_url) = self.config.cf_file_url {
+            if !cf_url.is_empty() {
+                let body = json!({ "file_url": url });
+                let resp = download_client
+                    .post(cf_url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ErrorBadRequest(format!("Failed to fetch file URL via cf_file_url: {:?}", e)))?;
+                let mime = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .split(';')
+                    .next()
+                    .unwrap_or("application/octet-stream")
+                    .trim()
+                    .to_string();
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| ErrorBadRequest(format!("Failed to read file bytes from cf_file_url: {:?}", e)))?;
+                (bytes.to_vec(), mime)
+            } else {
+                let resp = download_client
+                    .get(url)
+                    .send()
+                    .await
+                    .map_err(|e| ErrorBadRequest(format!("Failed to fetch file URL: {:?}", e)))?;
+                let mime = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .split(';')
+                    .next()
+                    .unwrap_or("application/octet-stream")
+                    .trim()
+                    .to_string();
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| ErrorBadRequest(format!("Failed to read file bytes: {:?}", e)))?;
+                (bytes.to_vec(), mime)
+            }
+        } else {
+            let resp = download_client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| ErrorBadRequest(format!("Failed to fetch file URL: {:?}", e)))?;
+            let mime = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .split(';')
+                .next()
+                .unwrap_or("application/octet-stream")
+                .trim()
+                .to_string();
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| ErrorBadRequest(format!("Failed to read file bytes: {:?}", e)))?;
+            (bytes.to_vec(), mime)
+        };
+
+        Ok((bytes, mime))
     }
 
     /// 申请上传 URL（对齐 Python get_upload_url）
