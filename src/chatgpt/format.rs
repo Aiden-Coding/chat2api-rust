@@ -461,7 +461,10 @@ impl Stream for OpenAIStream {
                             if let Some(parts_arr) = content.get("parts").and_then(|v| v.as_array()) {
                                 if let Some(part_str) = parts_arr.first().and_then(|v| v.as_str()) {
                                     let slice_start = self.len_last_content.min(part_str.len());
-                                    delta = json!({ "content": &part_str[slice_start..] });
+                                    let new_text = &part_str[slice_start..];
+                                    if !new_text.is_empty() {
+                                        delta = json!({ "content": new_text });
+                                    }
                                 }
                             }
                             finish_reason = json!("stop");
@@ -474,14 +477,24 @@ impl Stream for OpenAIStream {
                                 continue;
                             }
                         }
+                    } else {
+                        continue;
                     }
 
                     self.last_message_id = message_id.clone();
                     self.last_role = Some(role.to_string());
                     self.last_status = Some(status.to_string());
 
-                    if !self.end && delta.get("content").is_none() {
-                        delta = json!({ "role": "assistant", "content": "" });
+                    if !self.end {
+                        let content_val = delta.get("content");
+                        let has_no_content_field = content_val.is_none();
+                        let is_empty_content = content_val
+                            .and_then(|v| v.as_str())
+                            .map_or(false, |s| s.is_empty());
+                        
+                        if has_no_content_field || is_empty_content {
+                            delta = json!({ "role": "assistant", "content": "" });
+                        }
                     }
 
                     let mut chunk_new_data = json!({
