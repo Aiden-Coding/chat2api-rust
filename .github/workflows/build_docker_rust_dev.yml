@@ -36,7 +36,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git tag "$version-rust-dev"
-          git push https://x-access-token:${GHCR_PAT}@github.com/lanqian528/chat2api.git "$version-rust-dev"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/lanqian528/chat2api.git "$version-rust-dev"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
