@@ -216,7 +216,7 @@ impl Config {
         info!("IMPERSONATE:       {:?}", self.impersonate_list);
         info!("USER_AGENTS:       {:?}", self.user_agents_list);
         info!("CF_FILE_URL:       {:?}", self.cf_file_url);
-        info!("CF_CLEARANCE:      {:?}", self.cf_clearance.as_ref().map(|s| &s[..20.min(s.len())])); // 只显示前20字符
+        info!("CF_CLEARANCE:      {}", self.cf_clearance.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
         info!("---------------------- 接口功能参数 -----------------------");
         info!("HISTORY_DISABLED:  {}", self.history_disabled);
         info!("POW_DIFFICULTY:    {}", self.pow_difficulty);

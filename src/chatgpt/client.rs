@@ -11,11 +11,19 @@ pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<
         "chrome107" => Impersonate::Chrome107,
         "chrome116" => Impersonate::Chrome116,
         "chrome119" => Impersonate::Chrome119,
-        "chrome120" | "chrome123" | "chrome124" | "chrome125" | "chrome126" => Impersonate::Chrome120,
+        "chrome120" => Impersonate::Chrome120,
+        "chrome123" => Impersonate::Chrome123,
+        "chrome124" | "chrome125" => Impersonate::Chrome124,
+        "chrome126" => Impersonate::Chrome126,
+        "chrome127" => Impersonate::Chrome127,
+        "chrome128" => Impersonate::Chrome128,
+        "chrome129" => Impersonate::Chrome129,
+        "chrome130" => Impersonate::Chrome130,
+        "chrome131" | "chrome132" | "chrome133" | "chrome134" | "chrome135" | "chrome136" => Impersonate::Chrome131,
         "safari15_3" | "safari15" => Impersonate::Safari15_3,
         "safari17" | "safari17_0" => Impersonate::Safari17_0,
         "edge99" | "edge101" | "edge" => Impersonate::Edge101,
-        _ => Impersonate::Chrome120, // 默认采用 Chrome 120 指纹（更现代）
+        _ => Impersonate::Chrome131, // 使用本依赖可提供的最新 Chrome 指纹
     };
 
     let mut builder = ReqwestClient::builder()
@@ -35,11 +43,11 @@ pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<
 }
 
 /// 为 Grok Web 模式 (grok.com) 创建一个专用客户端
-/// 不跳过 TLS 证书校验，以保持完整的 Chrome120 JA3 指纹，
+/// 不跳过 TLS 证书校验，以保持完整的最新 Chrome JA3 指纹，
 /// 避免 danger_accept_invalid_certs 改变 ClientHello 导致 Cloudflare 403。
 pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<ReqwestClient, rquest::Error> {
     let mut builder = ReqwestClient::builder()
-        .impersonate(Impersonate::Chrome120);
+        .impersonate(Impersonate::Chrome131);
 
     if let Some(proxy_str) = proxy_url {
         if !proxy_str.is_empty() {
