@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::globals::AppState;
 use crate::grok::stream::{GrokStream, GrokStreamMode, format_not_stream_response};
 use actix_web::{HttpResponse, web, error::{ErrorInternalServerError, ErrorUnauthorized}};
-use log::{info, error};
+use log::{info, warn, error};
 use rand::seq::SliceRandom;
 
 
@@ -416,22 +416,35 @@ pub async fn handle_grok_conversation(
             None
         };
 
-        let impersonate = {
-            let inner = state.inner.read().await;
-            let mut rng = rand::thread_rng();
-            inner.impersonate_list.choose(&mut rng).cloned().unwrap_or_else(|| "chrome120".to_string())
-        };
+        let is_console = is_console_model(&model);
 
-        let client = match crate::chatgpt::client::create_client(main_proxy.as_deref(), &impersonate) {
-            Ok(c) => c,
-            Err(e) => {
-                let err = ErrorInternalServerError(format!("Failed to create client: {:?}", e));
-                last_err = Some(err);
-                continue;
+        // For console: use standard client (with invalid cert acceptance for proxy debug support)
+        // For web (grok.com): use a dedicated client WITHOUT danger_accept_invalid_certs 
+        // to preserve the true Chrome120 JA3 TLS fingerprint required by Cloudflare
+        let client = if is_console {
+            let impersonate = {
+                let inner = state.inner.read().await;
+                let mut rng = rand::thread_rng();
+                inner.impersonate_list.choose(&mut rng).cloned().unwrap_or_else(|| "chrome120".to_string())
+            };
+            match crate::chatgpt::client::create_client(main_proxy.as_deref(), &impersonate) {
+                Ok(c) => c,
+                Err(e) => {
+                    let err = ErrorInternalServerError(format!("Failed to create client: {:?}", e));
+                    last_err = Some(err);
+                    continue;
+                }
+            }
+        } else {
+            match crate::chatgpt::client::create_grok_web_client(main_proxy.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    let err = ErrorInternalServerError(format!("Failed to create grok web client: {:?}", e));
+                    last_err = Some(err);
+                    continue;
+                }
             }
         };
-
-        let is_console = is_console_model(&model);
         
         let resp_res = if is_console {
             // Build request payload
@@ -451,11 +464,21 @@ pub async fn handle_grok_conversation(
             headers.insert("authorization", rquest::header::HeaderValue::from_static("Bearer anonymous"));
             headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
 
-            let cookie_val = if sso_token.contains(';') {
+            let mut cookie_val = if sso_token.contains(';') {
                 sso_token.to_string()
             } else {
                 format!("sso={}; sso-rw={}", clean_sso, clean_sso)
             };
+
+            if let Some(ref cf) = config.cf_clearance {
+                if !cookie_val.contains("cf_clearance=") {
+                    cookie_val.push_str(&format!("; cf_clearance={}", cf));
+                } else {
+                    let re = regex::Regex::new(r"cf_clearance=[^;]*").unwrap();
+                    cookie_val = re.replace(&cookie_val, format!("cf_clearance={}", cf).as_str()).to_string();
+                }
+            }
+
             if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
                 headers.insert("cookie", hv);
             }
@@ -497,8 +520,7 @@ pub async fn handle_grok_conversation(
                     "screenHeight": 1329,
                     "screenWidth": 2056,
                     "viewportHeight": 1083,
-                    "viewportWidth": 2056,
-                    "timezoneOffsetMin": -480
+                    "viewportWidth": 2056
                 },
                 "disableMemory": true,
                 "disableSearch": false,
@@ -542,16 +564,24 @@ pub async fn handle_grok_conversation(
             
             headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
 
-            let cookie_val = if sso_token.contains(';') {
+            let mut cookie_val = if sso_token.contains(';') {
                 sso_token.to_string()
             } else {
-                let mut cookie = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
-                // 添加 cf_clearance 用于绕过 Cloudflare 反机器人检测
-                if let Some(ref cf) = config.cf_clearance {
-                    cookie.push_str(&format!("; cf_clearance={}", cf));
-                }
-                cookie
+                format!("sso={}; sso-rw={}", clean_sso, clean_sso)
             };
+            
+            // 无论原有 token 是否包含分号，都需要确保 cf_clearance 被加入
+            if let Some(ref cf) = config.cf_clearance {
+                if !cookie_val.contains("cf_clearance=") {
+                    cookie_val.push_str(&format!("; cf_clearance={}", cf));
+                } else {
+                    // 如果已经包含 cf_clearance 但我们需要使用 env 中的最新值，我们可以替换它
+                    // 简单的替换逻辑，实际开发中可以使用正则，这里使用简单的字符串替换
+                    let re = regex::Regex::new(r"cf_clearance=[^;]*").unwrap();
+                    cookie_val = re.replace(&cookie_val, format!("cf_clearance={}", cf).as_str()).to_string();
+                }
+            }
+
             if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
                 headers.insert("cookie", hv);
             }
@@ -562,10 +592,19 @@ pub async fn handle_grok_conversation(
             headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
             headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
 
-            let (ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
-                &state.inner.read().await.impersonate_list,
-                &config.user_agents_list,
-            );
+            // IMPORTANT: rquest maps chrome120/123/124/125/126 → all use Chrome120 JA3 TLS fingerprint.
+            // The UA string MUST match the actual TLS fingerprint version to avoid Cloudflare detecting a mismatch.
+            // Use a custom UA list if provided, otherwise force Chrome 120 to match the actual TLS fingerprint.
+            let ua = if !config.user_agents_list.is_empty() {
+                let (custom_ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
+                    &state.inner.read().await.impersonate_list,
+                    &config.user_agents_list,
+                );
+                custom_ua
+            } else {
+                // Default: use a macOS Chrome 120 UA to match rquest's Chrome120 TLS fingerprint
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()
+            };
             if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
                 headers.insert("user-agent", hv);
             }
@@ -634,7 +673,14 @@ pub async fn handle_grok_conversation(
                 } else {
                     let err_text = resp.text().await.unwrap_or_default();
                     error!("Grok API returned error status {}: {}", status, err_text);
-                    if status.as_u16() == 401 || status.as_u16() == 403 {
+                    
+                    // Check if this is a Cloudflare anti-bot rejection (code:7) vs real auth error
+                    let is_cloudflare_antibot = err_text.contains("\"code\":7") 
+                        || err_text.contains("anti-bot")
+                        || err_text.contains("Request rejected");
+                    
+                    if status.as_u16() == 401 || (status.as_u16() == 403 && !is_cloudflare_antibot) {
+                        // Real auth failure → permanently blacklist token
                         let mut inner = state.inner.write().await;
                         if !inner.grok_error_token_list.contains(&sso_token) {
                             inner.grok_error_token_list.push(sso_token.clone());
@@ -643,7 +689,13 @@ pub async fn handle_grok_conversation(
                                 AppState::save_item_to_db("grok_error_tokens", &tok, &"");
                             });
                         }
+                    } else if status.as_u16() == 403 && is_cloudflare_antibot {
+                        // Cloudflare anti-bot 403 → only exclude from this retry cycle (NOT permanent blacklist)
+                        // The token itself is likely valid; cf_clearance may be expired or fingerprint mismatch
+                        warn!("Cloudflare anti-bot 403 for model {} — cf_clearance may be expired or fingerprint mismatch", model);
+                        excluded_tokens.push(sso_token.clone());
                     } else if status.as_u16() == 429 {
+                        // Rate limited → temporarily freeze token for 300 seconds
                         let mut inner = state.inner.write().await;
                         inner.grok_rate_limited_tokens.insert(
                             sso_token.clone(),

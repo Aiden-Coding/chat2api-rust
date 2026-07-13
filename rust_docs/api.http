@@ -114,7 +114,7 @@ Content-Type: application/json
   "messages": [
     {
       "role": "user",
-      "content": "Hello!"
+      "content": "Hello 不够! 你会什么"
     }
   ],
   "stream": false

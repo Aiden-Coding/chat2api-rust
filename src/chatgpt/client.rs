@@ -33,3 +33,21 @@ pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<
 
     builder.build()
 }
+
+/// 为 Grok Web 模式 (grok.com) 创建一个专用客户端
+/// 不跳过 TLS 证书校验，以保持完整的 Chrome120 JA3 指纹，
+/// 避免 danger_accept_invalid_certs 改变 ClientHello 导致 Cloudflare 403。
+pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<ReqwestClient, rquest::Error> {
+    let mut builder = ReqwestClient::builder()
+        .impersonate(Impersonate::Chrome120);
+
+    if let Some(proxy_str) = proxy_url {
+        if !proxy_str.is_empty() {
+            if let Ok(proxy) = Proxy::all(proxy_str) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    builder.build()
+}
