@@ -11,10 +11,11 @@ pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<
         "chrome107" => Impersonate::Chrome107,
         "chrome116" => Impersonate::Chrome116,
         "chrome119" => Impersonate::Chrome119,
-        "chrome120" | "chrome123" => Impersonate::Chrome120,
-        "safari15_3" => Impersonate::Safari15_3,
-        "edge99" | "edge101" => Impersonate::Edge101,
-        _ => Impersonate::Safari15_3, // 默认采用 Safari 15_3 强指纹
+        "chrome120" | "chrome123" | "chrome124" | "chrome125" | "chrome126" => Impersonate::Chrome120,
+        "safari15_3" | "safari15" => Impersonate::Safari15_3,
+        "safari17" | "safari17_0" => Impersonate::Safari17_0,
+        "edge99" | "edge101" | "edge" => Impersonate::Edge101,
+        _ => Impersonate::Chrome120, // 默认采用 Chrome 120 指纹（更现代）
     };
 
     let mut builder = ReqwestClient::builder()

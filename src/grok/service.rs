@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use crate::config::Config;
 use crate::globals::AppState;
-use crate::grok::stream::{GrokStream, format_not_stream_response};
+use crate::grok::stream::{GrokStream, GrokStreamMode, format_not_stream_response};
 use actix_web::{HttpResponse, web, error::{ErrorInternalServerError, ErrorUnauthorized}};
 use log::{info, error};
 use rand::seq::SliceRandom;
@@ -90,7 +90,7 @@ pub fn build_console_payload(
     let console_model = match model {
         // Grok 4.3 Series
         "grok-4.3-console" | "grok-4.3-low" | "grok-4.3-medium" | "grok-4.3-high" | 
-        "grok-4.3-fast" | "grok-4.3-beta" | "grok-4.3" | "grok-beta" | "grok-3" | "grok-2" => "grok-4.3",
+        "grok-4.3-beta" | "grok-4.3" | "grok-beta" | "grok-3" | "grok-2" => "grok-4.3",
         
         // Grok 4.20 Reasoning Series
         "grok-4.20-0309-reasoning-console" | "grok-4.20-0309-reasoning" | 
@@ -246,6 +246,62 @@ pub async fn get_grok_req_token(
     Ok(String::new())
 }
 
+fn is_console_model(model: &str) -> bool {
+    model.contains("console")
+        || model.ends_with("-low")
+        || model.ends_with("-medium")
+        || model.ends_with("-high")
+        || model.ends_with("-xhigh")
+        || model.starts_with("grok-build")
+}
+
+fn get_web_mode_id(model: &str) -> &'static str {
+    match model {
+        "grok-4.20-0309-non-reasoning" | "grok-4.20-0309-non-reasoning-super" | "grok-4.20-0309-non-reasoning-heavy" | "grok-4.20-fast" => "fast",
+        "grok-4.3-fast" => "fast",  // Keep web routing for grok-4.3-fast
+        "grok-4.20-0309" | "grok-4.20-0309-super" | "grok-4.20-0309-heavy" | "grok-4.20-auto" => "auto",
+        "grok-4.20-0309-reasoning" | "grok-4.20-0309-reasoning-super" | "grok-4.20-0309-reasoning-heavy" | "grok-4.20-expert" => "expert",
+        "grok-4.20-multi-agent-0309" | "grok-4.20-heavy" => "heavy",
+        "grok-4.3-beta" | "grok-4.3" | "grok-beta" | "grok-3" | "grok-2" => "grok-420-computer-use-sa",
+        _ => "grok-420-computer-use-sa",
+    }
+}
+
+fn messages_to_web_prompt(messages: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(arr) = messages.as_array() {
+        for msg in arr {
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+            let content = msg.get("content").unwrap_or(&Value::Null);
+            
+            let content_str = match content {
+                Value::String(s) => s.clone(),
+                Value::Array(blocks) => {
+                    let mut text_blocks = Vec::new();
+                    for block in blocks {
+                        if let Some(block_obj) = block.as_object() {
+                            let btype = block_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            if btype == "text" {
+                                let text = block_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                if !text.is_empty() {
+                                    text_blocks.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                    text_blocks.join("\n")
+                }
+                _ => content.as_str().unwrap_or("").to_string(),
+            };
+            
+            if !content_str.is_empty() {
+                parts.push(format!("[{}]: {}", role, content_str));
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
 pub async fn handle_grok_conversation(
     origin_token: Option<String>,
     req_body: Value,
@@ -375,55 +431,200 @@ pub async fn handle_grok_conversation(
             }
         };
 
-        // Build request payload
-        let payload = build_console_payload(
-            &messages,
-            &model,
-            temperature,
-            top_p,
-            reasoning_effort,
-            true, // Always stream for unification
-        );
+        let is_console = is_console_model(&model);
+        
+        let resp_res = if is_console {
+            // Build request payload
+            let payload = build_console_payload(
+                &messages,
+                &model,
+                temperature,
+                top_p,
+                reasoning_effort,
+                is_stream, // Use actual stream parameter from request
+            );
 
-        let mut headers = rquest::header::HeaderMap::new();
-        headers.insert("accept", rquest::header::HeaderValue::from_static("*/*"));
-        headers.insert("accept-encoding", rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
-        headers.insert("accept-language", rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
-        headers.insert("authorization", rquest::header::HeaderValue::from_static("Bearer anonymous"));
-        headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
+            let mut headers = rquest::header::HeaderMap::new();
+            headers.insert("accept", rquest::header::HeaderValue::from_static("*/*"));
+            headers.insert("accept-encoding", rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+            headers.insert("accept-language", rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+            headers.insert("authorization", rquest::header::HeaderValue::from_static("Bearer anonymous"));
+            headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
 
-        let cookie_val = if sso_token.contains(';') {
-            sso_token.to_string()
+            let cookie_val = if sso_token.contains(';') {
+                sso_token.to_string()
+            } else {
+                format!("sso={}; sso-rw={}", clean_sso, clean_sso)
+            };
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
+                headers.insert("cookie", hv);
+            }
+            headers.insert("origin", rquest::header::HeaderValue::from_static("https://console.x.ai"));
+            headers.insert("priority", rquest::header::HeaderValue::from_static("u=1, i"));
+            headers.insert("referer", rquest::header::HeaderValue::from_static("https://console.x.ai/"));
+            headers.insert("sec-fetch-dest", rquest::header::HeaderValue::from_static("empty"));
+            headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
+            headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
+
+            let (ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
+                &state.inner.read().await.impersonate_list,
+                &config.user_agents_list,
+            );
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
+                headers.insert("user-agent", hv);
+            }
+            headers.insert("x-cluster", rquest::header::HeaderValue::from_static("https://us-east-1.api.x.ai"));
+
+            info!("Sending Grok conversation request to console.x.ai, model: {}", model);
+            info!("Grok request payload: {}", serde_json::to_string(&payload).unwrap_or_default());
+            info!("Grok request headers: {:?}", headers);
+
+            client.post("https://console.x.ai/v1/responses")
+                .headers(headers)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
         } else {
-            format!("sso={}; sso-rw={}", clean_sso, clean_sso)
+            let web_message = messages_to_web_prompt(&messages);
+            let web_mode = get_web_mode_id(&model);
+            let payload = json!({
+                "collectionIds": [],
+                "connectors": [],
+                "deviceEnvInfo": {
+                    "darkModeEnabled": false,
+                    "devicePixelRatio": 2,
+                    "screenHeight": 1329,
+                    "screenWidth": 2056,
+                    "viewportHeight": 1083,
+                    "viewportWidth": 2056,
+                    "timezoneOffsetMin": -480
+                },
+                "disableMemory": true,
+                "disableSearch": false,
+                "disableSelfHarmShortCircuit": false,
+                "disableTextFollowUps": false,
+                "enableImageGeneration": true,
+                "enableImageStreaming": true,
+                "enableSideBySide": true,
+                "fileAttachments": [],
+                "forceConcise": false,
+                "forceSideBySide": false,
+                "imageAttachments": [],
+                "imageGenerationCount": 2,
+                "isAsyncChat": false,
+                "message": web_message,
+                "modeId": web_mode,
+                "responseMetadata": {},
+                "returnImageBytes": false,
+                "returnRawGrokInXaiRequest": false,
+                "searchAllConnectors": false,
+                "sendFinalMetadata": true,
+                "temporary": true,
+                "toolOverrides": {
+                    "gmailSearch": false,
+                    "googleCalendarSearch": false,
+                    "outlookSearch": false,
+                    "outlookCalendarSearch": false,
+                    "googleDriveSearch": false,
+                }
+            });
+
+            let mut headers = rquest::header::HeaderMap::new();
+            headers.insert("accept", rquest::header::HeaderValue::from_static("*/*"));
+            headers.insert("accept-encoding", rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+            headers.insert("accept-language", rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+            
+            // Add anti-bot detection headers (from grok2api)
+            headers.insert("baggage", rquest::header::HeaderValue::from_static(
+                "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c"
+            ));
+            
+            headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
+
+            let cookie_val = if sso_token.contains(';') {
+                sso_token.to_string()
+            } else {
+                let mut cookie = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
+                // 添加 cf_clearance 用于绕过 Cloudflare 反机器人检测
+                if let Some(ref cf) = config.cf_clearance {
+                    cookie.push_str(&format!("; cf_clearance={}", cf));
+                }
+                cookie
+            };
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
+                headers.insert("cookie", hv);
+            }
+            headers.insert("origin", rquest::header::HeaderValue::from_static("https://grok.com"));
+            headers.insert("priority", rquest::header::HeaderValue::from_static("u=1, i"));
+            headers.insert("referer", rquest::header::HeaderValue::from_static("https://grok.com/"));
+            headers.insert("sec-fetch-dest", rquest::header::HeaderValue::from_static("empty"));
+            headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
+            headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
+
+            let (ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
+                &state.inner.read().await.impersonate_list,
+                &config.user_agents_list,
+            );
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
+                headers.insert("user-agent", hv);
+            }
+            
+            // Derive client hints from the actual User-Agent (matches Python _platform() / _major_version())
+            let ua_lower = ua.to_lowercase();
+            let platform = if ua_lower.contains("windows") {
+                "\"Windows\""
+            } else if ua_lower.contains("macintosh") || ua_lower.contains("mac os x") {
+                "\"macOS\""
+            } else if ua_lower.contains("android") {
+                "\"Android\""
+            } else if ua_lower.contains("linux") {
+                "\"Linux\""
+            } else {
+                "\"Windows\""
+            };
+            let mobile = if ua_lower.contains("mobile") || ua_lower.contains("android") { "?1" } else { "?0" };
+            
+            // Extract Chrome major version from UA (e.g. "Chrome/136.0.0.0" → "136")
+            let chrome_ver = ua.split("Chrome/")
+                .nth(1)
+                .and_then(|s| s.split('.').next())
+                .unwrap_or("136");
+            let sec_ch_ua_val = format!(
+                r#""Google Chrome";v="{v}", "Chromium";v="{v}", "Not(A:Brand";v="24""#,
+                v = chrome_ver
+            );
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&sec_ch_ua_val) {
+                headers.insert("sec-ch-ua", hv);
+            }
+            headers.insert("sec-ch-ua-mobile", rquest::header::HeaderValue::from_str(mobile).unwrap_or_else(|_| rquest::header::HeaderValue::from_static("?0")));
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(platform) {
+                headers.insert("sec-ch-ua-platform", hv);
+            }
+            
+            // Add x-statsig-id (randomized per Python grok2api logic)
+            let statsig_id = generate_statsig_id();
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&statsig_id) {
+                headers.insert("x-statsig-id", hv);
+            }
+            
+            // Add x-xai-request-id (UUID)
+            let request_id = uuid::Uuid::new_v4().to_string();
+            if let Ok(hv) = rquest::header::HeaderValue::from_str(&request_id) {
+                headers.insert("x-xai-request-id", hv);
+            }
+
+            info!("Sending Grok conversation request to grok.com, model: {}, mode: {}", model, web_mode);
+            info!("Grok request payload: {}", serde_json::to_string(&payload).unwrap_or_default());
+            info!("Grok request headers: {:?}", headers);
+
+            client.post("https://grok.com/rest/app-chat/conversations/new")
+                .headers(headers)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
         };
-        if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
-            headers.insert("cookie", hv);
-        }
-        headers.insert("origin", rquest::header::HeaderValue::from_static("https://console.x.ai"));
-        headers.insert("priority", rquest::header::HeaderValue::from_static("u=1, i"));
-        headers.insert("referer", rquest::header::HeaderValue::from_static("https://console.x.ai/"));
-        headers.insert("sec-fetch-dest", rquest::header::HeaderValue::from_static("empty"));
-        headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
-        headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
-
-        let (ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
-            &state.inner.read().await.impersonate_list,
-            &config.user_agents_list,
-        );
-        if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
-            headers.insert("user-agent", hv);
-        }
-        headers.insert("x-cluster", rquest::header::HeaderValue::from_static("https://us-east-1.api.x.ai"));
-
-        info!("Sending Grok conversation request to console.x.ai, model: {}", model);
-
-        let resp_res = client.post("https://console.x.ai/v1/responses")
-            .headers(headers)
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(120))
-            .send()
-            .await;
 
         let response = match resp_res {
             Ok(resp) => {
@@ -468,7 +669,12 @@ pub async fn handle_grok_conversation(
 
         // Create GrokStream
         let raw_stream = Box::pin(response.bytes_stream());
-        let grok_stream = GrokStream::new(raw_stream, model.clone(), tool_names.clone());
+        let stream_mode = if is_console {
+            GrokStreamMode::Console
+        } else {
+            GrokStreamMode::Web
+        };
+        let grok_stream = GrokStream::new(raw_stream, model.clone(), tool_names.clone(), stream_mode);
 
         if is_stream {
             return Ok(HttpResponse::Ok()
@@ -613,4 +819,28 @@ fn tool_calls_to_xml(tool_calls: &[serde_json::Value]) -> String {
     }
     lines.push("</tool_calls>".to_string());
     lines.join("\n")
+}
+
+/// Generate a randomised x-statsig-id value matching the Python grok2api _statsig_id() logic.
+fn generate_statsig_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let msg: String = if rng.gen_bool(0.5) {
+        // variant A: random 5-char alphanumeric child index
+        let rand5: String = (0..5)
+            .map(|_| {
+                let idx = rng.gen_range(0..36u8);
+                if idx < 10 { (b'0' + idx) as char } else { (b'a' + idx - 10) as char }
+            })
+            .collect();
+        format!("x1:TypeError: Cannot read properties of null (reading 'children['{rand5}']')")
+    } else {
+        // variant B: random 10-char alphabetic property name
+        let rand10: String = (0..10)
+            .map(|_| (b'a' + rng.gen_range(0..26u8)) as char)
+            .collect();
+        format!("x1:TypeError: Cannot read properties of undefined (reading '{rand10}')")
+    };
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(msg.as_bytes())
 }
