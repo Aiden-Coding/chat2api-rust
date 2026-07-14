@@ -181,7 +181,7 @@ pub async fn api_messages_to_chat(
 // 流式 SSE 包装转换器
 pub struct OpenAIStream {
     pub service: Arc<ChatService>,
-    pub raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
+    pub raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, wreq::Error>> + Send>>,
     pub chat_id: String,
     pub created_time: i64,
     pub model: String,
@@ -203,7 +203,7 @@ pub struct OpenAIStream {
 impl OpenAIStream {
     pub fn new(
         service: Arc<ChatService>,
-        raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
+        raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, wreq::Error>> + Send>>,
         model: String,
         max_tokens: usize,
     ) -> Self {

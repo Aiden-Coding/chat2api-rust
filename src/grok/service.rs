@@ -457,12 +457,12 @@ pub async fn handle_grok_conversation(
                 is_stream, // Use actual stream parameter from request
             );
 
-            let mut headers = rquest::header::HeaderMap::new();
-            headers.insert("accept", rquest::header::HeaderValue::from_static("*/*"));
-            headers.insert("accept-encoding", rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
-            headers.insert("accept-language", rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
-            headers.insert("authorization", rquest::header::HeaderValue::from_static("Bearer anonymous"));
-            headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
+            let mut headers = wreq::header::HeaderMap::new();
+            headers.insert("accept", wreq::header::HeaderValue::from_static("*/*"));
+            headers.insert("accept-encoding", wreq::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+            headers.insert("accept-language", wreq::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+            headers.insert("authorization", wreq::header::HeaderValue::from_static("Bearer anonymous"));
+            headers.insert("content-type", wreq::header::HeaderValue::from_static("application/json"));
 
             let mut cookie_val = if sso_token.contains(';') {
                 sso_token.to_string()
@@ -479,24 +479,24 @@ pub async fn handle_grok_conversation(
                 }
             }
 
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&cookie_val) {
                 headers.insert("cookie", hv);
             }
-            headers.insert("origin", rquest::header::HeaderValue::from_static("https://console.x.ai"));
-            headers.insert("priority", rquest::header::HeaderValue::from_static("u=1, i"));
-            headers.insert("referer", rquest::header::HeaderValue::from_static("https://console.x.ai/"));
-            headers.insert("sec-fetch-dest", rquest::header::HeaderValue::from_static("empty"));
-            headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
-            headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
+            headers.insert("origin", wreq::header::HeaderValue::from_static("https://console.x.ai"));
+            headers.insert("priority", wreq::header::HeaderValue::from_static("u=1, i"));
+            headers.insert("referer", wreq::header::HeaderValue::from_static("https://console.x.ai/"));
+            headers.insert("sec-fetch-dest", wreq::header::HeaderValue::from_static("empty"));
+            headers.insert("sec-fetch-mode", wreq::header::HeaderValue::from_static("cors"));
+            headers.insert("sec-fetch-site", wreq::header::HeaderValue::from_static("same-origin"));
 
             let (ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
                 &state.inner.read().await.impersonate_list,
                 &config.user_agents_list,
             );
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&ua) {
                 headers.insert("user-agent", hv);
             }
-            headers.insert("x-cluster", rquest::header::HeaderValue::from_static("https://us-east-1.api.x.ai"));
+            headers.insert("x-cluster", wreq::header::HeaderValue::from_static("https://us-east-1.api.x.ai"));
 
             info!("Sending Grok conversation request to console.x.ai, model: {}", model);
             info!("Grok request payload: {}", serde_json::to_string(&payload).unwrap_or_default());
@@ -552,35 +552,34 @@ pub async fn handle_grok_conversation(
                 }
             });
 
-            let mut headers = rquest::header::HeaderMap::new();
-            headers.insert("accept", rquest::header::HeaderValue::from_static("*/*"));
-            headers.insert("accept-encoding", rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
-            headers.insert("accept-language", rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+            let mut headers = wreq::header::HeaderMap::new();
+            headers.insert("accept", wreq::header::HeaderValue::from_static("*/*"));
+            headers.insert("accept-encoding", wreq::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+            headers.insert("accept-language", wreq::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
 
             // Add anti-bot detection headers (from grok2api)
-            headers.insert("baggage", rquest::header::HeaderValue::from_static(
+            headers.insert("baggage", wreq::header::HeaderValue::from_static(
                 "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c"
             ));
 
-            headers.insert("content-type", rquest::header::HeaderValue::from_static("application/json"));
+            headers.insert("content-type", wreq::header::HeaderValue::from_static("application/json"));
 
             // grok2api's default path only sends the two SSO cookies. Its TLS
             // impersonation and browser-like headers handle the regular Web flow.
             let cookie_val = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
 
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&cookie_val) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&cookie_val) {
                 headers.insert("cookie", hv);
             }
-            headers.insert("origin", rquest::header::HeaderValue::from_static("https://grok.com"));
-            headers.insert("priority", rquest::header::HeaderValue::from_static("u=1, i"));
-            headers.insert("referer", rquest::header::HeaderValue::from_static("https://grok.com/"));
-            headers.insert("sec-fetch-dest", rquest::header::HeaderValue::from_static("empty"));
-            headers.insert("sec-fetch-mode", rquest::header::HeaderValue::from_static("cors"));
-            headers.insert("sec-fetch-site", rquest::header::HeaderValue::from_static("same-origin"));
+            headers.insert("origin", wreq::header::HeaderValue::from_static("https://grok.com"));
+            headers.insert("priority", wreq::header::HeaderValue::from_static("u=1, i"));
+            headers.insert("referer", wreq::header::HeaderValue::from_static("https://grok.com/"));
+            headers.insert("sec-fetch-dest", wreq::header::HeaderValue::from_static("empty"));
+            headers.insert("sec-fetch-mode", wreq::header::HeaderValue::from_static("cors"));
+            headers.insert("sec-fetch-site", wreq::header::HeaderValue::from_static("same-origin"));
 
-            // Keep the default UA aligned with the Chrome131 TLS/HTTP2 fingerprint
-            // selected by create_grok_web_client.  A custom USER_AGENTS value is
-            // retained for compatibility with the existing global configuration.
+            // Keep the default UA aligned with the Chrome136 TLS/HTTP2 fingerprint
+            // selected by create_grok_web_client.
             let ua = if !config.user_agents_list.is_empty() {
                 let (custom_ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
                     &state.inner.read().await.impersonate_list,
@@ -588,9 +587,9 @@ pub async fn handle_grok_conversation(
                 );
                 custom_ua
             } else {
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string()
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string()
             };
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&ua) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&ua) {
                 headers.insert("user-agent", hv);
             }
             
@@ -609,23 +608,25 @@ pub async fn handle_grok_conversation(
             };
             let mobile = if ua_lower.contains("mobile") || ua_lower.contains("android") { "?1" } else { "?0" };
             
-            // Extract Chrome major version from UA (e.g. "Chrome/131.0.0.0" → "131")
+            // Extract Chrome major version from UA (e.g. "Chrome/136.0.0.0" → "136")
             let chrome_ver = ua.split("Chrome/")
                 .nth(1)
                 .and_then(|s| s.split('.').next())
-                .unwrap_or("131");
+                .unwrap_or("136");
             let sec_ch_ua_val = format!(
                 r#""Google Chrome";v="{v}", "Chromium";v="{v}", "Not(A:Brand";v="24""#,
                 v = chrome_ver
             );
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&sec_ch_ua_val) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&sec_ch_ua_val) {
                 headers.insert("sec-ch-ua", hv);
             }
-            headers.insert("sec-ch-ua-mobile", rquest::header::HeaderValue::from_str(mobile).unwrap_or_else(|_| rquest::header::HeaderValue::from_static("?0")));
-            headers.insert("sec-ch-ua-model", rquest::header::HeaderValue::from_static(""));
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(platform) {
+            headers.insert("sec-ch-ua-mobile", wreq::header::HeaderValue::from_str(mobile).unwrap_or_else(|_| wreq::header::HeaderValue::from_static("?0")));
+            headers.insert("sec-ch-ua-model", wreq::header::HeaderValue::from_static(""));
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(platform) {
                 headers.insert("sec-ch-ua-platform", hv);
             }
+            headers.insert("upgrade-insecure-requests", wreq::header::HeaderValue::from_static("1"));
+            headers.insert("sec-fetch-user", wreq::header::HeaderValue::from_static("?1"));
             
             // Python _arch() checks: aarch64/arm → "arm", x86_64/x64/win64/intel → "x86"
             // IMPORTANT: macOS Chrome UA says "Intel Mac OS X" so "intel" matches → x86
@@ -639,22 +640,20 @@ pub async fn handle_grok_conversation(
             };
 
             if let Some(arch) = arch_val {
-                if let Ok(hv) = rquest::header::HeaderValue::from_str(arch) {
+                if let Ok(hv) = wreq::header::HeaderValue::from_str(arch) {
                     headers.insert("sec-ch-ua-arch", hv);
                 }
-                headers.insert("sec-ch-ua-bitness", rquest::header::HeaderValue::from_static("64"));
+                headers.insert("sec-ch-ua-bitness", wreq::header::HeaderValue::from_static("64"));
             }
             
-            // x-statsig-id: use the STATIC default value matching Python grok2api
-            // Python default (features.dynamic_statsig=False): fixed base64 string
-            // Decodes to: "e:TypeError: Cannot read properties of undefined (reading 'childNodes')"
-            headers.insert("x-statsig-id", rquest::header::HeaderValue::from_static(
-                "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="
-            ));
+            // x-statsig-id: use dynamic generation matching grok2api default
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&generate_statsig_id()) {
+                headers.insert("x-statsig-id", hv);
+            }
 
             // Add x-xai-request-id (UUID)
             let request_id = uuid::Uuid::new_v4().to_string();
-            if let Ok(hv) = rquest::header::HeaderValue::from_str(&request_id) {
+            if let Ok(hv) = wreq::header::HeaderValue::from_str(&request_id) {
                 headers.insert("x-xai-request-id", hv);
             }
 

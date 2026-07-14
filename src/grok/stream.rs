@@ -13,7 +13,7 @@ pub enum GrokStreamMode {
 }
 
 pub struct GrokStream {
-    pub raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
+    pub raw_stream: Pin<Box<dyn Stream<Item = Result<actix_web::web::Bytes, wreq::Error>> + Send>>,
     pub chat_id: String,
     pub created_time: i64,
     pub model: String,
@@ -30,7 +30,7 @@ pub struct GrokStream {
 
 impl GrokStream {
     pub fn new(
-        raw_stream: Pin<Box<dyn Stream<Item = Result<Bytes, rquest::Error>> + Send>>,
+        raw_stream: Pin<Box<dyn Stream<Item = Result<actix_web::web::Bytes, wreq::Error>> + Send>>,
         model: String,
         tool_names: Vec<String>,
         mode: GrokStreamMode,
@@ -212,7 +212,7 @@ impl Stream for GrokStream {
                 Poll::Ready(Some(Err(e))) => {
                     error!("Error reading from Grok raw_stream: {:?}", e);
                     self.end = true;
-                    return Poll::Ready(Some(Err(std::io::Error::new(std::io::ErrorKind::Other, e))));
+                    return Poll::Ready(Some(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))));
                 }
                 Poll::Ready(Some(Ok(bytes))) => {
                     let chunk_str = String::from_utf8_lossy(&bytes).to_string();

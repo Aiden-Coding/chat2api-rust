@@ -1,36 +1,14 @@
-use rquest::{Client as ReqwestClient, Proxy, tls::Impersonate};
+use wreq::{Client, Proxy};
+use wreq_util::Emulation;
 
-/// 根据给定的代理 URL 与浏览器 Impersonate 指纹类型构建 rquest (仿 Chrome/Safari) 的 HTTP 客户端
-/// proxy_url: 代理地址 (例如 http://127.0.0.1:7890)
-/// impersonate_name: 混淆拟态浏览器的指纹名称
-pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<ReqwestClient, rquest::Error> {
-    // 匹配并确定底层的 Impersonate 拟态指纹
-    let impersonate = match impersonate_name.to_lowercase().as_str() {
-        "chrome100" | "chrome99" | "chrome101" | "chrome110" => Impersonate::Chrome100,
-        "chrome104" => Impersonate::Chrome104,
-        "chrome107" => Impersonate::Chrome107,
-        "chrome116" => Impersonate::Chrome116,
-        "chrome119" => Impersonate::Chrome119,
-        "chrome120" => Impersonate::Chrome120,
-        "chrome123" => Impersonate::Chrome123,
-        "chrome124" | "chrome125" => Impersonate::Chrome124,
-        "chrome126" => Impersonate::Chrome126,
-        "chrome127" => Impersonate::Chrome127,
-        "chrome128" => Impersonate::Chrome128,
-        "chrome129" => Impersonate::Chrome129,
-        "chrome130" => Impersonate::Chrome130,
-        "chrome131" | "chrome132" | "chrome133" | "chrome134" | "chrome135" | "chrome136" => Impersonate::Chrome131,
-        "safari15_3" | "safari15" => Impersonate::Safari15_3,
-        "safari17" | "safari17_0" => Impersonate::Safari17_0,
-        "edge99" | "edge101" | "edge" => Impersonate::Edge101,
-        _ => Impersonate::Chrome131, // 使用本依赖可提供的最新 Chrome 指纹
-    };
+/// 根据给定的代理 URL 与浏览器 Emulation 类型构建 wreq (BoringSSL Chrome) 的 HTTP 客户端
+/// wreq 使用 BoringSSL（与 Chrome 相同的 TLS 库），能够产生与真实浏览器完全一致的 JA3/JA4 指纹
+pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<Client, wreq::Error> {
+    let emulation = name_to_emulation(impersonate_name);
 
-    let mut builder = ReqwestClient::builder()
-        .impersonate(impersonate) // 设置拟态浏览器 SSL/JA3 握手参数
-        .danger_accept_invalid_certs(true); // 允许跳过非法的 SSL/TLS 证书校验 (防止中间人代理捕获报错)
+    let mut builder = Client::builder()
+        .emulation(emulation);
 
-    // 如果指定了代理，则将其注入到 client 客户端构建器中
     if let Some(proxy_str) = proxy_url {
         if !proxy_str.is_empty() {
             if let Ok(proxy) = Proxy::all(proxy_str) {
@@ -42,12 +20,41 @@ pub fn create_client(proxy_url: Option<&str>, impersonate_name: &str) -> Result<
     builder.build()
 }
 
-/// 为 Grok Web 模式 (grok.com) 创建一个专用客户端
-/// 不跳过 TLS 证书校验，以保持完整的最新 Chrome JA3 指纹，
-/// 避免 danger_accept_invalid_certs 改变 ClientHello 导致 Cloudflare 403。
-pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<ReqwestClient, rquest::Error> {
-    let mut builder = ReqwestClient::builder()
-        .impersonate(Impersonate::Chrome131);
+/// 为 Grok Web 模式 (grok.com) 创建专用客户端
+/// 使用 Chrome136 Emulation，不跳过 TLS 证书校验
+/// 以保持完整的 BoringSSL Chrome JA3/JA4 指纹，通过 Cloudflare 反机器人检测
+pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<Client, wreq::Error> {
+    // Chrome136 是目前最接近当前真实浏览器的版本，且 Cloudflare 对其有良好支持
+    let order = vec![
+        wreq::header::HeaderName::from_static("host"),
+        wreq::header::HeaderName::from_static("sec-ch-ua"),
+        wreq::header::HeaderName::from_static("sec-ch-ua-mobile"),
+        wreq::header::HeaderName::from_static("sec-ch-ua-platform"),
+        wreq::header::HeaderName::from_static("upgrade-insecure-requests"),
+        wreq::header::HeaderName::from_static("user-agent"),
+        wreq::header::HeaderName::from_static("accept"),
+        wreq::header::HeaderName::from_static("sec-fetch-site"),
+        wreq::header::HeaderName::from_static("sec-fetch-mode"),
+        wreq::header::HeaderName::from_static("sec-fetch-user"),
+        wreq::header::HeaderName::from_static("sec-fetch-dest"),
+        wreq::header::HeaderName::from_static("accept-encoding"),
+        wreq::header::HeaderName::from_static("accept-language"),
+        wreq::header::HeaderName::from_static("priority"),
+        wreq::header::HeaderName::from_static("baggage"),
+        wreq::header::HeaderName::from_static("content-type"),
+        wreq::header::HeaderName::from_static("origin"),
+        wreq::header::HeaderName::from_static("referer"),
+        wreq::header::HeaderName::from_static("x-statsig-id"),
+        wreq::header::HeaderName::from_static("x-xai-request-id"),
+        wreq::header::HeaderName::from_static("sec-ch-ua-model"),
+        wreq::header::HeaderName::from_static("sec-ch-ua-arch"),
+        wreq::header::HeaderName::from_static("sec-ch-ua-bitness"),
+        wreq::header::HeaderName::from_static("cookie"),
+    ];
+
+    let mut builder = Client::builder()
+        .emulation(Emulation::Chrome136)
+        .headers_order(order);
 
     if let Some(proxy_str) = proxy_url {
         if !proxy_str.is_empty() {
@@ -58,4 +65,40 @@ pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<ReqwestClient, 
     }
 
     builder.build()
+}
+
+/// 将字符串名称映射到 wreq-util Emulation 枚举值
+pub fn name_to_emulation(name: &str) -> Emulation {
+    match name.to_lowercase().as_str() {
+        "chrome100" | "chrome99" | "chrome101" => Emulation::Chrome100,
+        "chrome104" => Emulation::Chrome104,
+        "chrome107" => Emulation::Chrome107,
+        "chrome110" => Emulation::Chrome110,
+        "chrome116" => Emulation::Chrome116,
+        "chrome119" => Emulation::Chrome119,
+        "chrome120" => Emulation::Chrome120,
+        "chrome123" => Emulation::Chrome123,
+        "chrome124" => Emulation::Chrome124,
+        "chrome126" => Emulation::Chrome126,
+        "chrome127" => Emulation::Chrome127,
+        "chrome128" => Emulation::Chrome128,
+        "chrome129" => Emulation::Chrome129,
+        "chrome130" => Emulation::Chrome130,
+        "chrome131" => Emulation::Chrome131,
+        "chrome132" => Emulation::Chrome132,
+        "chrome133" => Emulation::Chrome133,
+        "chrome134" => Emulation::Chrome134,
+        "chrome135" => Emulation::Chrome135,
+        "chrome136" => Emulation::Chrome136,
+        "chrome137" => Emulation::Chrome137,
+        "safari15_3" | "safari15" => Emulation::Safari15_3,
+        "safari17" | "safari17_0" => Emulation::Safari17_0,
+        "safari18" => Emulation::Safari18,
+        "edge101" | "edge" => Emulation::Edge101,
+        "edge122" => Emulation::Edge122,
+        "edge127" => Emulation::Edge127,
+        "edge131" => Emulation::Edge131,
+        "edge134" => Emulation::Edge134,
+        _ => Emulation::Chrome136, // 默认使用 Chrome136 (最新且稳定)
+    }
 }

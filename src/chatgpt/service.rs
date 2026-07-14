@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use log::{info, error};
 use actix_web::error::{ErrorInternalServerError, ErrorForbidden, ErrorNotFound, ErrorBadRequest};
-use rquest::header::{HeaderMap, HeaderValue};
+use wreq::header::{HeaderMap, HeaderValue};
 use md5;
 
 use crate::config::Config;
@@ -36,8 +36,8 @@ pub struct ChatService {
     pub access_token: Option<String>,
     pub account_id: Option<String>,
 
-    pub client: rquest::Client,
-    pub sentinel_client: rquest::Client,
+    pub client: wreq::Client,
+    pub sentinel_client: wreq::Client,
 
     pub host_url: String,
     pub base_url: String,
@@ -814,7 +814,7 @@ impl ChatService {
     }
 
     // 发送会话请求
-    pub async fn send_conversation_request(&self, req_body: Value) -> Result<rquest::Response, actix_web::Error> {
+    pub async fn send_conversation_request(&self, req_body: Value) -> Result<wreq::Response, actix_web::Error> {
         let url = format!("{}/conversation", self.base_url);
         let mut headers = self.base_headers.clone();
         headers.insert("accept", HeaderValue::from_static("text/event-stream"));
@@ -927,18 +927,17 @@ impl ChatService {
             return Err(ErrorBadRequest("Failed to decode data URL base64"));
         }
 
-        let mut builder = rquest::Client::builder()
-            .impersonate(rquest::tls::Impersonate::Safari15_3)
-            .danger_accept_invalid_certs(true);
+        let mut builder = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Safari15_3);
 
         if let Some(ref export_proxy) = self.config.export_proxy_url {
             if !export_proxy.is_empty() {
-                if let Ok(proxy) = rquest::Proxy::all(export_proxy) {
+                if let Ok(proxy) = wreq::Proxy::all(export_proxy) {
                     builder = builder.proxy(proxy);
                 }
             }
         }
-        let download_client = builder.build()
+        let download_client: wreq::Client = builder.build()
             .map_err(|e| ErrorInternalServerError(format!("Failed to create download client: {:?}", e)))?;
 
         let (bytes, mime) = if let Some(ref cf_url) = self.config.cf_file_url {
