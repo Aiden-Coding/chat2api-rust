@@ -564,9 +564,16 @@ pub async fn handle_grok_conversation(
 
             headers.insert("content-type", wreq::header::HeaderValue::from_static("application/json"));
 
-            // grok2api's default path only sends the two SSO cookies. Its TLS
-            // impersonation and browser-like headers handle the regular Web flow.
-            let cookie_val = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
+            // grok2api's default path sends the two SSO cookies, and appends cf_clearance if provided.
+            let mut cookie_val = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
+            if let Some(ref cf) = config.cf_clearance {
+                if !cookie_val.contains("cf_clearance=") {
+                    cookie_val.push_str(&format!("; cf_clearance={}", cf));
+                } else {
+                    let re = regex::Regex::new(r"cf_clearance=[^;]*").unwrap();
+                    cookie_val = re.replace(&cookie_val, format!("cf_clearance={}", cf).as_str()).to_string();
+                }
+            }
 
             if let Ok(hv) = wreq::header::HeaderValue::from_str(&cookie_val) {
                 headers.insert("cookie", hv);
