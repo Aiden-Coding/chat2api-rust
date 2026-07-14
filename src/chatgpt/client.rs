@@ -54,7 +54,8 @@ pub fn create_grok_web_client(proxy_url: Option<&str>) -> Result<Client, wreq::E
 
     let mut builder = Client::builder()
         .emulation(Emulation::Chrome136)
-        .headers_order(order);
+        .headers_order(order)
+        .http1_only();
 
     if let Some(proxy_str) = proxy_url {
         if !proxy_str.is_empty() {
