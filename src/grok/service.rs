@@ -662,6 +662,7 @@ pub async fn handle_grok_conversation(
 
             info!("Sending Grok conversation request to grok.com, model: {}, mode: {}", model, web_mode);
             info!("Grok Web request prepared (payload_bytes={})", payload_bytes.len());
+            info!("Grok Web request headers: {:?}", headers);
 
             client.post("https://grok.com/rest/app-chat/conversations/new")
                 .headers(headers)
