@@ -46,6 +46,8 @@ pub struct AppStateInner {
     pub impersonate_list: Vec<String>,       // 当前可用拟态指纹的名称数组 (供随机选择)
     pub limit_details: HashMap<String, HashMap<String, i64>>, // 缓存：限流频控拦截 Token -> (Model -> clears_in)
     pub grok_rate_limited_tokens: HashMap<String, std::time::Instant>, // 缓存：暂时被频控 (429) 的 Grok Token
+    pub dynamic_cf_clearance: Option<String>,            // 动态由 FlareSolverr 求解获取的 clearance
+    pub dynamic_user_agent: Option<String>,              // 动态由 FlareSolverr 返回的匹配 User-Agent
 }
 
 /// 全局共享状态的包装结构体，采用多线程安全的 Arc + 异步读写锁 RwLock 维护
@@ -179,6 +181,8 @@ impl AppState {
                 impersonate_list,
                 limit_details: HashMap::new(),
                 grok_rate_limited_tokens: HashMap::new(),
+                dynamic_cf_clearance: None,
+                dynamic_user_agent: None,
             })),
         }
     }

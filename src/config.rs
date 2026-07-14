@@ -35,6 +35,7 @@ pub struct Config {
     pub no_sentinel: bool,                     // 是否直接剔除 Sentinel 头参数
     pub cf_file_url: Option<String>,           // 使用 Cloudflare Workers 代理抓取下载多模态资源
     pub cf_clearance: Option<String>,          // Cloudflare clearance token (用于绕过 Grok Web 反检测)
+    pub flaresolverr_url: Option<String>,      // FlareSolverr 接口网关地址 (用于自动挑战获取 cf_clearance)
     pub version: String,                       // 程序读取 version.txt 的当前版本号
 }
 
@@ -103,6 +104,7 @@ impl Config {
         let turnstile_solver_url = env::var("TURNSTILE_SOLVER_URL").ok().filter(|s| !s.trim().is_empty());
         let cf_file_url = env::var("CF_FILE_URL").ok().filter(|s| !s.trim().is_empty());
         let cf_clearance = env::var("CF_CLEARANCE").ok().filter(|s| !s.trim().is_empty());
+        let flaresolverr_url = env::var("FLARESOLVERR_URL").ok().filter(|s| !s.trim().is_empty());
 
         let history_disabled = env::var("HISTORY_DISABLED")
             .map(|v| parse_bool(&v))
@@ -188,6 +190,7 @@ impl Config {
             no_sentinel,
             cf_file_url,
             cf_clearance,
+            flaresolverr_url,
             version,
         };
 
@@ -217,6 +220,7 @@ impl Config {
         info!("USER_AGENTS:       {:?}", self.user_agents_list);
         info!("CF_FILE_URL:       {:?}", self.cf_file_url);
         info!("CF_CLEARANCE:      {}", self.cf_clearance.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
+        info!("FLARESOLVERR_URL:  {:?}", self.flaresolverr_url);
         info!("---------------------- 接口功能参数 -----------------------");
         info!("HISTORY_DISABLED:  {}", self.history_disabled);
         info!("POW_DIFFICULTY:    {}", self.pow_difficulty);

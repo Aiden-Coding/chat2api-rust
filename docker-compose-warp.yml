@@ -25,6 +25,16 @@ services:
       retries: 3     # 失败3次后标记为不健康
       start_period: 5s  # 容器启动后等待5秒再开始检查
       
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=info
+    networks:
+      - internal_network
+
   chat2api:
     image: lanqian528/chat2api:latest
     container_name: chat2api
@@ -35,9 +45,12 @@ services:
       - TZ=Asia/Shanghai
       - AUTHORIZATION=sk-xxx
       - PROXY_URL=socks5://warp:1080  # 设置 PROXY_URL 为 warp 容器的代理地址
+      - FLARESOLVERR_URL=http://flaresolverr:8191
     depends_on:
       warp:
         condition: service_healthy  # 只有 warp 的健康检查通过时，chat2api 才会启动
+      flaresolverr:
+        condition: service_started
     networks:
       - internal_network  # chat2api 和 warp 在同一个内部网络
     volumes:

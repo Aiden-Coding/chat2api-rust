@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use crate::config::Config;
 use crate::globals::AppState;
+use crate::grok::flaresolverr;
 use crate::grok::stream::{GrokStream, GrokStreamMode, format_not_stream_response};
 use actix_web::{HttpResponse, web, error::{ErrorInternalServerError, ErrorUnauthorized}};
 use log::{info, warn, error};
@@ -416,6 +417,22 @@ pub async fn handle_grok_conversation(
             None
         };
 
+        // If flaresolverr_url is configured, check if we need to solve cf_clearance
+        if let Some(ref fs_url) = config.flaresolverr_url {
+            let needs_solving = {
+                let inner = state.inner.read().await;
+                inner.dynamic_cf_clearance.is_none()
+            };
+
+            if needs_solving {
+                if let Some((cf, ua)) = flaresolverr::solve_cf_clearance(fs_url, main_proxy.as_deref()).await {
+                    let mut inner = state.inner.write().await;
+                    inner.dynamic_cf_clearance = Some(cf);
+                    inner.dynamic_user_agent = Some(ua);
+                }
+            }
+        }
+
         let is_console = is_console_model(&model);
 
         // For console: use standard client (with invalid cert acceptance for proxy debug support)
@@ -564,9 +581,14 @@ pub async fn handle_grok_conversation(
 
             headers.insert("content-type", wreq::header::HeaderValue::from_static("application/json"));
 
+            let effective_cf_clearance = {
+                let inner = state.inner.read().await;
+                inner.dynamic_cf_clearance.clone().or_else(|| config.cf_clearance.clone())
+            };
+
             // grok2api's default path sends the two SSO cookies, and appends cf_clearance if provided.
             let mut cookie_val = format!("sso={}; sso-rw={}", clean_sso, clean_sso);
-            if let Some(ref cf) = config.cf_clearance {
+            if let Some(ref cf) = effective_cf_clearance {
                 if !cookie_val.contains("cf_clearance=") {
                     cookie_val.push_str(&format!("; cf_clearance={}", cf));
                 } else {
@@ -586,15 +608,20 @@ pub async fn handle_grok_conversation(
             headers.insert("sec-fetch-site", wreq::header::HeaderValue::from_static("same-origin"));
 
             // Keep the default UA aligned with the Chrome136 TLS/HTTP2 fingerprint
-            // selected by create_grok_web_client.
-            let ua = if !config.user_agents_list.is_empty() {
-                let (custom_ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
-                    &state.inner.read().await.impersonate_list,
-                    &config.user_agents_list,
-                );
-                custom_ua
-            } else {
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string()
+            // selected by create_grok_web_client, or use UA returned by FlareSolverr.
+            let ua = {
+                let inner = state.inner.read().await;
+                if let Some(ref dyn_ua) = inner.dynamic_user_agent {
+                    dyn_ua.clone()
+                } else if !config.user_agents_list.is_empty() {
+                    let (custom_ua, _, _, _, _, _) = crate::chatgpt::service::generate_random_fp(
+                        &inner.impersonate_list,
+                        &config.user_agents_list,
+                    );
+                    custom_ua
+                } else {
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string()
+                }
             };
             if let Ok(hv) = wreq::header::HeaderValue::from_str(&ua) {
                 headers.insert("user-agent", hv);
@@ -707,6 +734,11 @@ pub async fn handle_grok_conversation(
                         // Cloudflare anti-bot 403 → only exclude from this retry cycle (NOT permanent blacklist)
                         // The token itself is likely valid; cf_clearance may be expired or fingerprint mismatch
                         warn!("Cloudflare anti-bot 403 for model {} — cf_clearance may be expired or fingerprint mismatch", model);
+                        {
+                            let mut inner = state.inner.write().await;
+                            inner.dynamic_cf_clearance = None;
+                            inner.dynamic_user_agent = None;
+                        }
                         excluded_tokens.push(sso_token.clone());
                     } else if status.as_u16() == 429 {
                         // Rate limited → temporarily freeze token for 300 seconds
@@ -726,6 +758,11 @@ pub async fn handle_grok_conversation(
             }
             Err(e) => {
                 error!("Grok connection error: {:?}", e);
+                {
+                    let mut inner = state.inner.write().await;
+                    inner.dynamic_cf_clearance = None;
+                    inner.dynamic_user_agent = None;
+                }
                 excluded_tokens.push(sso_token.clone());
                 let err = ErrorInternalServerError(format!("Grok connection error: {:?}", e));
                 last_err = Some(err);
